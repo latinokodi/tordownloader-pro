@@ -1,6 +1,6 @@
 {
   "name": "tordownloader-pro",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "TorDownloader PRO — Premium TorBox & Jackett Client",
   "main": "dist-electron/main.js",
   "scripts": {
