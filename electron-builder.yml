@@ -1,0 +1,44 @@
+appId: com.tordownloader.pro
+productName: TorDownloader PRO
+copyright: Copyright © 2025
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+
+extraResources:
+  - from: electron/qbit-plugins
+    to: qbit-plugins
+    filter:
+      - "qbit-runner.exe"
+      - "engines/**"
+      - "novaprinter.py"
+      - "helpers.py"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: TorDownloader PRO
+  artifactName: TorDownloader-PRO-Setup-${version}.${ext}
+
+asar: true
+asarUnpack:
+  - "node_modules/better-sqlite3/**"
+  - "node_modules/bindings/**"
+  - "node_modules/file-uri-to-path/**"
+
+npmRebuild: true

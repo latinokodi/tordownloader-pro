@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-electron/
+*.db
+.agent/
+release/
+__pycache__/
+*.pyc
+*.pyo
+electron/flaresolverr/
+tsconfig.tsbuildinfo
