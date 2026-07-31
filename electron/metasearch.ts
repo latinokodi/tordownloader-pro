@@ -28,12 +28,20 @@ export interface MetaResult {
 // ── Paths ──────────────────────────────────────────────
 
 function getRunnerPath(): string {
-  // In dev: electron/qbit-plugins/qbit-runner.py
-  // In prod (packaged): resources/qbit-plugins/qbit-runner.py
+  // In dev: use Python to run the .py script directly
+  // In prod (packaged): use the bundled PyInstaller .exe (no Python needed)
   if (process.env.VITE_DEV_SERVER_URL) {
     return path.join(__dirname, '..', 'electron', 'qbit-plugins', 'qbit-runner.py')
   }
-  return path.join(process.resourcesPath || app.getAppPath(), 'qbit-plugins', 'qbit-runner.py')
+  return path.join(process.resourcesPath || app.getAppPath(), 'qbit-plugins', 'qbit-runner.exe')
+}
+
+function getRunnerCommand(): { cmd: string; args: string[] } {
+  const runnerPath = getRunnerPath()
+  if (runnerPath.endsWith('.py')) {
+    return { cmd: 'python', args: [runnerPath] }
+  }
+  return { cmd: runnerPath, args: [] }
 }
 
 function getCFCookiePath(): string {
@@ -46,6 +54,12 @@ let _ensureDepsPromise: Promise<boolean> | null = null
 
 function ensureDeps(): Promise<boolean> {
   if (_ensureDepsPromise) return _ensureDepsPromise
+
+  // In production, the .exe bundles Python + cloudscraper — nothing to check
+  if (!process.env.VITE_DEV_SERVER_URL) {
+    _ensureDepsPromise = Promise.resolve(true)
+    return _ensureDepsPromise
+  }
 
   _ensureDepsPromise = new Promise<boolean>((resolve) => {
     const check = spawn('python', ['-c', 'import cloudscraper'], {
@@ -110,7 +124,8 @@ export class MetaSearch {
       let stderr = ''
       let resolved = false
 
-      const proc: ChildProcess = spawn('python', [this.runnerPath, query], {
+      const { cmd, args } = getRunnerCommand()
+      const proc: ChildProcess = spawn(cmd, [...args, query], {
         windowsHide: true,
         timeout: SEARCH_TIMEOUT_MS,
         env: {
