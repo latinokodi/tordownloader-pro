@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import path from 'path'
 import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, Settings } from './db'
 import { initMetaSearch, getMetaSearch } from './metasearch'
-import { startFlareSolverr, getFlareSolverrUrl } from './flaresolverr'
+import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr } from './flaresolverr'
 import { TorboxAPI } from './torbox'
 import { startWorker, cancelLocalDownload } from './worker'
 
@@ -98,6 +98,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  stopFlareSolverr()
   app.quit()
 })
 
