@@ -11,6 +11,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import { app } from 'electron'
 import http from 'http'
+import fs from 'fs'
 
 const FLARESOLVERR_PORT = 8191
 const HEALTH_CHECK_INTERVAL = 30_000
@@ -58,6 +59,10 @@ function startProcess(): void {
   if (_proc) return
 
   const exePath = getFlaresolverrPath()
+  if (!fs.existsSync(exePath)) {
+    console.log('[FlareSolverr] Not installed — Cloudflare bypass unavailable')
+    return
+  }
   console.log(`[FlareSolverr] Starting: ${exePath}`)
 
   _proc = spawn(exePath, ['--port', String(FLARESOLVERR_PORT)], {
@@ -97,6 +102,7 @@ function startProcess(): void {
 
 export async function startFlareSolverr(): Promise<void> {
   startProcess()
+  if (!_proc) return // exe not found — nothing to wait for
   const ready = await waitForReady(STARTUP_TIMEOUT)
   if (ready) {
     _healthy = true
