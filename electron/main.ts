@@ -85,7 +85,11 @@ app.whenReady().then(async () => {
   createWindow()
 
   // Start FlareSolverr for Cloudflare bypass (bundled, no Docker)
-  startFlareSolverr().catch(err =>
+  startFlareSolverr().then(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('flaresolverr-ready')
+    }
+  }).catch(err =>
     console.warn('[FlareSolverr] Start failed (non-fatal):', err)
   )
   
