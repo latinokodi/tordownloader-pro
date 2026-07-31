@@ -239,3 +239,12 @@ export function getFlareSolverrUrl(): string {
 export function isFlareSolverrReady(): boolean {
   return _healthy
 }
+
+export function stopFlareSolverr(): void {
+  if (_proc) {
+    console.log('[FlareSolverr] Stopping...')
+    _proc.kill('SIGTERM')
+    _proc = null
+    _healthy = false
+  }
+}
