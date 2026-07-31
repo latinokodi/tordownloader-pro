@@ -110,7 +110,7 @@ ipcMain.handle('set-settings', (_e, settings: Partial<Settings>) => {
   return { success: true }
 })
 
-ipcMain.handle('search-jackett', async (_e, query: string) => {
+ipcMain.handle('search-metasearch', async (_e, query: string) => {
   try {
     const ms = getMetaSearch()
     const results = await ms.search(query)
@@ -294,7 +294,7 @@ ipcMain.handle('torbox-user-info', async () => {
   }
 });
 
-ipcMain.handle('test-jackett', async (_e, _data: { url: string; api_key: string }) => {
+ipcMain.handle('test-metasearch', async (_e, _data: { url: string; api_key: string }) => {
   try {
     const ms = getMetaSearch()
     // Run a quick search to verify Python runner and plugins work

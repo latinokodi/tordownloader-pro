@@ -12,8 +12,6 @@ export function initDB(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
       id INTEGER PRIMARY KEY,
-      jackett_url VARCHAR DEFAULT 'http://localhost:9117',
-      jackett_api_key VARCHAR DEFAULT '',
       torbox_token VARCHAR DEFAULT '',
       destination_folder VARCHAR DEFAULT '',
       auto_remove_completed BOOLEAN DEFAULT 0
@@ -50,8 +48,6 @@ export function initDB(): void {
 
 export interface Settings {
   id: number;
-  jackett_url: string;
-  jackett_api_key: string;
   torbox_token: string;
   destination_folder: string;
   auto_remove_completed: boolean;

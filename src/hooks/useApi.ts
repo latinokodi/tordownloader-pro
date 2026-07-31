@@ -26,7 +26,7 @@ export async function api<T = unknown>(
       const id = path.split('/')[3]
       return await electronAPI.cancelDownload(id) as T
     }
-    if (path.startsWith('/search')) return await electronAPI.searchJackett(body.query) as T
+    if (path.startsWith('/search')) return await electronAPI.searchMetaSearch(body.query) as T
     if (path.startsWith('/select-folder')) return { path: await electronAPI.selectFolder() } as T
     
     if (path === '/auth/start') return await electronAPI.authStart() as T
@@ -35,7 +35,7 @@ export async function api<T = unknown>(
       const deviceCode = path.split('/')[3]
       return await electronAPI.authPoll(deviceCode) as T
     }
-    if (path === '/settings/test-jackett') return await electronAPI.testJackett(body) as T
+    if (path === '/settings/test-metasearch') return await electronAPI.testMetaSearch() as T
     
     // Fallback
     return { success: true } as T
