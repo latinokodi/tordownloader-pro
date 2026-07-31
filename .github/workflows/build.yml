@@ -1,0 +1,44 @@
+name: Build Installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: pip install pyinstaller cloudscraper
+
+      - name: Build qbit-runner.exe
+        run: |
+          cd electron/qbit-plugins
+          pyinstaller --onefile --name qbit-runner --distpath . --add-data "engines:engines" --add-data "novaprinter.py:." --add-data "helpers.py:." --hidden-import cloudscraper --clean qbit-runner.py
+          rm -rf build qbit-runner.spec
+        shell: bash
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build and package
+        run: npm run build && npx electron-builder
+        shell: bash
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: TorDownloader-PRO-Setup
+          path: release/TorDownloader-PRO-Setup-*.exe
