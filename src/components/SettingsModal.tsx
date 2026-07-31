@@ -65,9 +65,7 @@ export function SettingsModal({ onClose, showToast }: Props) {
   const handleTestMetaSearch = async () => {
     setTestingMetaSearch(true)
     try {
-      const res = await api<any>('/settings/test-jackett', 'POST', {
-        url: '', api_key: ''
-      })
+      const res = await api<any>('/settings/test-metasearch', 'POST')
       if (res.success) {
         setSearchStatus(res.detail || 'OK')
         showToast(res.detail || t.settings.enginesReady, 'success')

@@ -4,7 +4,7 @@ const api = {
   getSettings: (): Promise<any> => ipcRenderer.invoke('get-settings'),
   setSettings: (settings: any): Promise<any> => ipcRenderer.invoke('set-settings', settings),
   
-  searchJackett: (query: string): Promise<any> => ipcRenderer.invoke('search-jackett', query),
+  searchMetaSearch: (query: string): Promise<any> => ipcRenderer.invoke('search-metasearch', query),
   
   getDownloads: (): Promise<any[]> => ipcRenderer.invoke('get-downloads'),
   addMagnet: (magnet: string): Promise<any> => ipcRenderer.invoke('add-magnet', magnet),
@@ -17,7 +17,7 @@ const api = {
   authStart: (): Promise<any> => ipcRenderer.invoke('auth-start'),
   authPoll: (deviceCode: string): Promise<any> => ipcRenderer.invoke('auth-poll', deviceCode),
   getUserInfo: (): Promise<any> => ipcRenderer.invoke('torbox-user-info'),
-  testJackett: (data: { url: string; api_key: string }): Promise<any> => ipcRenderer.invoke('test-jackett', data),
+  testMetaSearch: (): Promise<any> => ipcRenderer.invoke('test-metasearch'),
   
   onDownloadsUpdated: (callback: () => void) => {
     ipcRenderer.on('downloads-updated', callback)
