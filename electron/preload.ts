@@ -32,6 +32,10 @@ const api = {
   openFolder: (folderPath: string): Promise<{ success: boolean; error: string | null }> =>
     ipcRenderer.invoke('open-folder', folderPath),
   clearCompleted: (): Promise<any> => ipcRenderer.invoke('clear-completed'),
+  onFlareSolverrReady: (callback: () => void) => {
+    ipcRenderer.on('flaresolverr-ready', callback)
+    return () => ipcRenderer.removeAllListeners('flaresolverr-ready')
+  },
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

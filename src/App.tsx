@@ -21,6 +21,7 @@ function App() {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
   const [downloads, setDownloads] = useState<any[]>([])
   const [destFolder, setDestFolder] = useState('')
+  const [flaresolverrReady, setFlareSolverrReady] = useState(false)
   
   const { addTab, setTabResult, setTabError } = useSearchTabsStore()
 
@@ -60,6 +61,11 @@ function App() {
     if ((window as any).electronAPI?.onDownloadsUpdated) {
       (window as any).electronAPI.onDownloadsUpdated(() => {
         refreshDownloads().catch(console.error)
+      })
+    }
+    if ((window as any).electronAPI?.onFlareSolverrReady) {
+      (window as any).electronAPI.onFlareSolverrReady(() => {
+        setFlareSolverrReady(true)
       })
     }
     
@@ -159,7 +165,12 @@ function App() {
       {/* Sidebar */}
       <aside className="w-64 border-r border-border bg-bg-panel flex flex-col z-10">
         <div className="p-6 border-b border-border flex items-center gap-3">
-          <div className="w-8 h-8 bg-accent flex items-center justify-center text-bg-deep font-black font-mono">TB</div>
+          <div className="relative">
+            <div className="w-8 h-8 bg-accent flex items-center justify-center text-bg-deep font-black font-mono">TB</div>
+            {flaresolverrReady && (
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-bg-panel" title="FlareSolverr activo" />
+            )}
+          </div>
           <span className="font-bold uppercase tracking-wider text-sm">TorDownloader</span>
         </div>
         
