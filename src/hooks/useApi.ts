@@ -37,6 +37,9 @@ export async function api<T = unknown>(
     }
     if (path === '/settings/test-metasearch') return await electronAPI.testMetaSearch() as T
     
+    if (path === '/plugins/check') return await electronAPI.checkPlugins() as T
+    if (path === '/plugins/update') return await electronAPI.updatePlugins() as T
+    
     // Fallback
     return { success: true } as T
   } catch (err: any) {

@@ -80,6 +80,31 @@ except ImportError:
 # ── Side-effect sentinel ────────────────────────────────
 htmlentitydecode = "sentinel"
 
+# ── Electron CF Bridge ──────────────────────────────────
+_ELECTRON_CF_PORT = os.environ.get('ELECTRON_CF_PORT', '')
+_ELECTRON_CF_URL = f'http://127.0.0.1:{_ELECTRON_CF_PORT}/fetch' if _ELECTRON_CF_PORT else ''
+
+
+def _fetch_via_electron(url: str) -> Optional[str]:
+    """Fetch a URL through Electron's native Chromium (handles CF natively)."""
+    if not _ELECTRON_CF_URL or not _HAS_REQUESTS or _session is None:
+        return None
+
+    try:
+        resp = _session.post(
+            _ELECTRON_CF_URL,
+            json={'url': url},
+            timeout=65,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            html = data.get('html', '')
+            if html and not _is_cf_challenge(html):
+                return html
+        return None
+    except Exception:
+        return None
+
 
 def _is_cf_challenge(text: str) -> bool:
     """Check if the response is a Cloudflare challenge page."""
@@ -102,8 +127,12 @@ def _fetch_via_flaresolverr(url: str) -> Optional[str]:
     if _FLARESOLVERR_AVAILABLE is False:
         return None
 
+    if not _HAS_REQUESTS or _session is None:
+        _FLARESOLVERR_AVAILABLE = False
+        return None
+
     try:
-        resp = _requests.post(
+        resp = _session.post(
             f'{FLARESOLVERR_URL}/v1',
             json={
                 'cmd': 'request.get',
@@ -120,7 +149,7 @@ def _fetch_via_flaresolverr(url: str) -> Optional[str]:
             # FlareSolverr responded but couldn't fetch (site down, etc.)
             # Don't mark as unavailable — other sites may still work
             return None
-    except requests.exceptions.ConnectionError:
+    except _requests.exceptions.ConnectionError:
         # FlareSolverr is genuinely unreachable
         _FLARESOLVERR_AVAILABLE = False
         return None
@@ -159,28 +188,28 @@ def retrieve_url(url: str, request_data: Optional[bytes] = None) -> str:
     """
     Fetch a URL and return its text content.
 
-    Strategy: cloudscraper → (if CF challenge) FlareSolverr → requests
+    Strategy: cloudscraper → Electron bridge → FlareSolverr → requests
     """
     result = None
 
-    # 1. Try cloudscraper
+    # 1. Try cloudscraper (fast, handles most sites)
     if _HAS_CLOUDSCRAPER and _scraper is not None:
         try:
             result = _fetch_with_cloudscraper(url, request_data)
             if not _is_cf_challenge(result):
                 return result
-            # Got CF challenge — try FlareSolverr
+            # Got CF challenge — try Electron bridge
         except Exception:
             pass
 
-    # 2. If cloudscraper gave us a CF page, route through FlareSolverr
+    # 2. If cloudscraper gave us a CF page, try Electron's native Chromium
     if result and _is_cf_challenge(result):
-        fs_result = _fetch_via_flaresolverr(url)
-        if fs_result is not None:
-            return fs_result
+        el_result = _fetch_via_electron(url)
+        if el_result is not None:
+            return el_result
 
-    # 3. If no cloudscraper or it failed, try FlareSolverr directly
-    if result is None:
+    # 3. Try FlareSolverr (headless Chrome with undetected-chromedriver)
+    if result is None or _is_cf_challenge(result):
         fs_result = _fetch_via_flaresolverr(url)
         if fs_result is not None:
             return fs_result
@@ -199,6 +228,7 @@ def retrieve_url(url: str, request_data: Optional[bytes] = None) -> str:
     raise RuntimeError(
         f"Failed to fetch {url}. "
         f"cloudscraper={'available' if _HAS_CLOUDSCRAPER else 'missing'}, "
+        f"electron={'available' if _ELECTRON_CF_URL else 'missing'}, "
         f"flaresolverr={'available' if _FLARESOLVERR_AVAILABLE else 'unavailable'}, "
         f"requests={'available' if _HAS_REQUESTS else 'missing'}"
     )

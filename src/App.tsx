@@ -23,7 +23,7 @@ function App() {
   const [destFolder, setDestFolder] = useState('')
   const [flaresolverrReady, setFlareSolverrReady] = useState(false)
   
-  const { addTab, setTabResult, setTabError } = useSearchTabsStore()
+  const { addTab, setTabResult, setTabError, appendResults, setCurrentEngine, markSearchDone } = useSearchTabsStore()
 
   useEffect(() => {
     if (!toast) return
@@ -68,8 +68,33 @@ function App() {
         setFlareSolverrReady(true)
       })
     }
+
+    // Streaming search progress listener
+    const cleanupSearchProgress = (window as any).electronAPI?.onSearchProgress?.((progress: any) => {
+      const store = useSearchTabsStore.getState()
+      const activeTabId = store.activeTabId
+      if (!activeTabId) return
+
+      if (progress.type === 'engine_start') {
+        store.setCurrentEngine(activeTabId, progress.engine)
+      } else if (progress.type === 'engine_results' && progress.results?.length > 0) {
+        store.appendResults(activeTabId, progress.results)
+      }
+    })
+
+    const cleanupSearchError = (window as any).electronAPI?.onSearchError?.((error: string) => {
+      const store = useSearchTabsStore.getState()
+      const activeTabId = store.activeTabId
+      if (activeTabId) {
+        store.setTabError(activeTabId, error)
+      }
+    })
     
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      cleanupSearchProgress?.()
+      cleanupSearchError?.()
+    }
   }, [refreshDownloads])
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -82,7 +107,15 @@ function App() {
 
     try {
       const res = await api<any>('/search', 'POST', { query: currentQuery })
-      setTabResult(tabId, res.data ?? res.results ?? [])
+      // Streaming results already arrived via IPC — just mark done
+      // But if no results came through streaming, use the final batch
+      const store = useSearchTabsStore.getState()
+      const tab = store.tabs[tabId]
+      if (tab && (!tab.results || tab.results.length === 0)) {
+        store.setTabResult(tabId, res.data ?? res.results ?? [])
+      } else {
+        store.markSearchDone(tabId)
+      }
     } catch (err: any) {
       setTabError(tabId, err.message || t.toasts.searchFailed)
     }

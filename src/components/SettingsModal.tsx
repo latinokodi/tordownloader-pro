@@ -21,6 +21,8 @@ export function SettingsModal({ onClose, showToast }: Props) {
   const [searchStatus, setSearchStatus] = useState<string | null>(null)
   const [authData, setAuthData] = useState<any | null>(null)
   const [torboxUser, setTorboxUser] = useState<any | null>(null)
+  const [checkingPlugins, setCheckingPlugins] = useState(false)
+  const [pluginStatus, setPluginStatus] = useState<string | null>(null)
   const pollTimer = useRef<number | null>(null)
 
   const fetchTorboxUser = async () => {
@@ -76,6 +78,33 @@ export function SettingsModal({ onClose, showToast }: Props) {
       showToast(err.message || t.settings.enginesFailed, 'error')
     } finally {
       setTestingMetaSearch(false)
+    }
+  }
+
+  const handleUpdatePlugins = async () => {
+    setCheckingPlugins(true)
+    setPluginStatus(null)
+    try {
+      const res = await api<any>('/plugins/update')
+      if (res.success && res.data) {
+        const data = res.data
+        if (data.updated.length > 0) {
+          const msg = t.settings.pluginsUpdated.replace('{count}', String(data.updated.length))
+          setPluginStatus(msg)
+          showToast(msg, 'success')
+        } else {
+          setPluginStatus(t.settings.pluginsUpToDate)
+          showToast(t.settings.pluginsUpToDate, 'success')
+        }
+      } else {
+        setPluginStatus(res.error || t.settings.pluginsCheckFailed)
+        showToast(res.error || t.settings.pluginsCheckFailed, 'error')
+      }
+    } catch (err: any) {
+      setPluginStatus(err.message || t.settings.pluginsCheckFailed)
+      showToast(err.message || t.settings.pluginsCheckFailed, 'error')
+    } finally {
+      setCheckingPlugins(false)
     }
   }
 
@@ -156,6 +185,17 @@ export function SettingsModal({ onClose, showToast }: Props) {
               >
                 {testingMetaSearch ? t.settings.testing : t.settings.testEngines}
               </button>
+              <button
+                type="button"
+                className="btn btn-accent mt-3 ml-3"
+                onClick={handleUpdatePlugins}
+                disabled={checkingPlugins}
+              >
+                {checkingPlugins ? t.settings.checkingPlugins : t.settings.updatePlugins}
+              </button>
+              {pluginStatus && (
+                <div className="mt-2 text-xs font-mono text-success">{pluginStatus}</div>
+              )}
             </div>
           </div>
 

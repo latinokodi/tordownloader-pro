@@ -28,6 +28,7 @@ const en = {
     downloadAdded: 'Download added!',
     downloadError: 'Error adding download.',
     noDirectLink: 'This result does not provide a direct download link. Try a result from TPB or TorrentsCSV.',
+    searchingEngine: 'Searching',
   },
   transfers: {
     activeQueue: 'Active Queue',
@@ -84,6 +85,11 @@ const en = {
     folderError: 'Error selecting folder',
     torboxLinked: 'Torbox Linked!',
     authFailed: 'Auth failed to start',
+    pluginsUpToDate: 'Plugins are up to date',
+    pluginsUpdated: 'Updated {count} plugin(s)',
+    pluginsCheckFailed: 'Failed to check for updates',
+    checkingPlugins: 'CHECKING...',
+    updatePlugins: 'UPDATE SEARCH PLUGINS',
   },
   toasts: {
     magnetAdded: 'Magnet added to TorBox!',

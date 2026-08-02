@@ -2,6 +2,7 @@ import { useSearchTabsStore } from '../store/searchTabs'
 import type { SearchResult } from '../store/searchTabs'
 import { api } from '../hooks/useApi'
 import { useT } from '../i18n'
+import { Search } from 'lucide-react'
 
 interface Props {
   onDownloadAdded: () => void
@@ -87,15 +88,6 @@ export function SearchTab({ onDownloadAdded, showToast }: Props) {
     )
   }
 
-  if (tab.loading) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-accent font-mono uppercase tracking-widest gap-4 min-h-[300px]">
-        <div className="w-12 h-12 border-4 border-bg-deep border-t-accent rounded-full animate-spin" />
-        <p>{t.search.searching} "{tab.query}"...</p>
-      </div>
-    )
-  }
-
   if (tab.error) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-danger font-mono uppercase tracking-widest gap-4 min-h-[300px]">
@@ -105,7 +97,35 @@ export function SearchTab({ onDownloadAdded, showToast }: Props) {
     )
   }
 
-  if (!tab.results || tab.results.length === 0) {
+  // Search bar shown during loading and when we have results but search is still ongoing
+  const searchBar = tab.loading ? (
+    <div className="flex items-center gap-3 px-4 py-3 bg-bg-deep border border-accent/30 font-mono uppercase tracking-widest text-sm">
+      <div className="w-4 h-4 border-2 border-bg-panel border-t-accent rounded-full animate-spin shrink-0" />
+      <Search size={14} className="text-accent shrink-0" />
+      {tab.currentEngine ? (
+        <span className="text-accent">
+          {t.search.searchingEngine} <span className="text-text-main">"{tab.currentEngine}"</span>...
+        </span>
+      ) : (
+        <span className="text-accent">{t.search.searching} "{tab.query}"...</span>
+      )}
+    </div>
+  ) : null
+
+  const hasResults = tab.results && tab.results.length > 0
+
+  if (!hasResults && tab.loading) {
+    return (
+      <div className="h-full flex flex-col min-h-[300px]">
+        {searchBar}
+        <div className="flex-1 flex items-center justify-center text-text-muted font-mono uppercase tracking-widest text-sm">
+          {t.search.searching} "{tab.query}"...
+        </div>
+      </div>
+    )
+  }
+
+  if (!hasResults && !tab.loading) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-text-muted font-mono uppercase tracking-widest gap-4 min-h-[300px]">
         <span className="text-4xl opacity-50">🏜️</span>
@@ -116,7 +136,8 @@ export function SearchTab({ onDownloadAdded, showToast }: Props) {
 
   return (
     <div className="flex flex-col gap-3">
-      {tab.results.map((r: SearchResult, i: number) => (
+      {searchBar}
+      {tab.results!.map((r: SearchResult, i: number) => (
         <div key={i} className="glass-panel p-4 flex justify-between items-center transition-colors hover:border-accent">
           <div className="flex-1 overflow-hidden pr-4">
             <div className="font-bold text-text-heading truncate" title={r.title ?? ''}>{r.title}</div>
