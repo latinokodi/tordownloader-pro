@@ -30,6 +30,7 @@ const es: TranslationKeys = {
     downloadAdded: '¡Descarga agregada!',
     downloadError: 'Error al agregar descarga.',
     noDirectLink: 'Este resultado no proporciona un enlace de descarga directo. Pruebe con un resultado de TPB o TorrentsCSV.',
+    searchingEngine: 'Buscando en',
   },
   transfers: {
     activeQueue: 'Cola Activa',
@@ -86,6 +87,11 @@ const es: TranslationKeys = {
     folderError: 'Error al seleccionar carpeta',
     torboxLinked: '¡TorBox Vinculado!',
     authFailed: 'Error al iniciar autenticación',
+    pluginsUpToDate: 'Plugins actualizados',
+    pluginsUpdated: '{count} plugin(s) actualizado(s)',
+    pluginsCheckFailed: 'Error al buscar actualizaciones',
+    checkingPlugins: 'VERIFICANDO...',
+    updatePlugins: 'ACTUALIZAR PLUGINS',
   },
   toasts: {
     magnetAdded: '¡Magnet agregado a TorBox!',

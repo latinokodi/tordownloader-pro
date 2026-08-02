@@ -18,7 +18,11 @@ export function SearchTabsBar() {
             onClick={() => switchTab(id)}
           >
             <span className="truncate max-w-[150px]">{tab.query}</span>
-            {tab.loading && <span className="w-2 h-2 rounded-full bg-bg-deep animate-pulse" />}
+            {tab.loading && (
+              <span className="text-accent text-[10px] truncate max-w-[100px]">
+                {tab.currentEngine || '...'}
+              </span>
+            )}
             <button
               className="hover:text-danger hover:scale-110 transition-transform font-bold"
               onClick={(e) => {

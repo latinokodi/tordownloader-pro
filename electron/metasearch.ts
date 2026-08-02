@@ -12,6 +12,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import { app } from 'electron'
+import { getCFServerPort } from './cf-fetcher'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -46,6 +47,10 @@ function getRunnerCommand(): { cmd: string; args: string[] } {
 
 function getCFCookiePath(): string {
   return path.join(app.getPath('userData'), 'cf_cookies.json')
+}
+
+function getUserPluginsDir(): string {
+  return path.join(app.getPath('userData'), 'plugins', 'engines')
 }
 
 // ── Auto-install cloudscraper ──────────────────────────
@@ -98,6 +103,19 @@ function ensureDeps(): Promise<boolean> {
 
 const SEARCH_TIMEOUT_MS = 60_000 // 60 seconds total
 
+export interface SearchProgress {
+  type: 'engine_start' | 'engine_results' | 'done'
+  engine?: string
+  results?: MetaResult[]
+  total?: number
+}
+
+export interface SearchStreamCallbacks {
+  onProgress: (progress: SearchProgress) => void
+  onDone: (results: MetaResult[]) => void
+  onError: (error: Error) => void
+}
+
 export class MetaSearch {
   private runnerPath: string
   private ready: boolean = false
@@ -131,6 +149,8 @@ export class MetaSearch {
         env: {
           ...process.env,
           CF_COOKIE_FILE: getCFCookiePath(),
+          ELECTRON_CF_PORT: String(getCFServerPort()),
+          USER_PLUGINS_DIR: getUserPluginsDir(),
         },
       })
 
@@ -180,6 +200,105 @@ export class MetaSearch {
         resolved = true
         console.error(`[MetaSearch] Failed to spawn Python runner:`, err.message)
         resolve([])
+      })
+    })
+  }
+
+  async searchStream(query: string, callbacks: SearchStreamCallbacks): Promise<void> {
+    if (!this.ready) {
+      await this.initialize()
+    }
+
+    return new Promise<void>((resolve) => {
+      let buffer = ''
+      let stderr = ''
+      let resolved = false
+      let finalResults: MetaResult[] = []
+
+      const { cmd, args } = getRunnerCommand()
+      const proc: ChildProcess = spawn(cmd, [...args, '--stream', query], {
+        windowsHide: true,
+        timeout: SEARCH_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          CF_COOKIE_FILE: getCFCookiePath(),
+          ELECTRON_CF_PORT: String(getCFServerPort()),
+          USER_PLUGINS_DIR: getUserPluginsDir(),
+        },
+      })
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          proc.kill('SIGTERM')
+          console.warn(`[MetaSearch] Stream search timed out for: "${query}"`)
+          callbacks.onError(new Error('Search timed out'))
+          resolve()
+        }
+      }, SEARCH_TIMEOUT_MS)
+
+      proc.stdout?.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString('utf-8')
+
+        // Process complete lines from the buffer
+        const lines = buffer.split('\n')
+        // Keep the last partial line in buffer
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+
+          try {
+            const progress: SearchProgress = JSON.parse(trimmed)
+
+            if (progress.type === 'engine_start' || progress.type === 'engine_results') {
+              callbacks.onProgress(progress)
+            } else if (progress.type === 'done') {
+              // finalResults will be set via onProgress (engine_results accumulate)
+              // The done event signals completion
+            }
+          } catch {
+            // Non-JSON line (debug output), skip
+          }
+        }
+      })
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf-8')
+      })
+
+      proc.on('close', (code) => {
+        clearTimeout(timer)
+        if (resolved) return
+        resolved = true
+
+        // Process any remaining buffer
+        if (buffer.trim()) {
+          try {
+            const progress: SearchProgress = JSON.parse(buffer.trim())
+            if (progress.type === 'engine_results' || progress.type === 'engine_start') {
+              callbacks.onProgress(progress)
+            }
+          } catch { /* ignore */ }
+        }
+
+        if (stderr && code !== 0) {
+          console.warn(`[MetaSearch] Stream stderr for "${query}":`, stderr.slice(0, 500))
+        }
+
+        // Pass empty results if nothing was collected
+        callbacks.onDone([])
+        resolve()
+      })
+
+      proc.on('error', (err) => {
+        clearTimeout(timer)
+        if (resolved) return
+        resolved = true
+        console.error(`[MetaSearch] Stream failed to spawn runner:`, err.message)
+        callbacks.onError(err)
+        resolve()
       })
     })
   }

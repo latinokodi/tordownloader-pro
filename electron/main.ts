@@ -1,8 +1,10 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import path from 'path'
 import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, Settings } from './db'
-import { initMetaSearch, getMetaSearch } from './metasearch'
+import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
 import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr } from './flaresolverr'
+import { startCFServer, getCFServerPort, stopCFServer } from './cf-fetcher'
+import { checkPluginsForUpdates, updatePlugins } from './plugin-updater'
 import { TorboxAPI } from './torbox'
 import { startWorker, cancelLocalDownload } from './worker'
 
@@ -84,6 +86,10 @@ app.whenReady().then(async () => {
   initMetaSearch()  // starts Python runner dependency check
   createWindow()
 
+  // Start local HTTP bridge for Python plugins to fetch CF-protected pages
+  // through Electron's native Chromium (handles Cloudflare natively)
+  startCFServer()
+
   // Start FlareSolverr for Cloudflare bypass (bundled, no Docker)
   startFlareSolverr().then(() => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -103,6 +109,7 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   stopFlareSolverr()
+  stopCFServer()
   app.quit()
 })
 
@@ -115,11 +122,28 @@ ipcMain.handle('set-settings', (_e, settings: Partial<Settings>) => {
   return { success: true }
 })
 
-ipcMain.handle('search-metasearch', async (_e, query: string) => {
+ipcMain.handle('search-metasearch', async (e, query: string) => {
   try {
     const ms = getMetaSearch()
-    const results = await ms.search(query)
-    return { success: true, data: results }
+    const sender = e.sender
+    let allResults: import('./metasearch').MetaResult[] = []
+
+    await ms.searchStream(query, {
+      onProgress: (progress: SearchProgress) => {
+        if (sender.isDestroyed()) return
+        sender.send('search-progress', { tabId: null, ...progress })
+      },
+      onDone: (results) => {
+        allResults = results
+      },
+      onError: (err) => {
+        if (!sender.isDestroyed()) {
+          sender.send('search-error', err.message)
+        }
+      },
+    })
+
+    return { success: true, data: allResults }
   } catch (error: any) {
     return { success: false, error: error.message || 'Search failed' }
   }
@@ -324,4 +348,22 @@ ipcMain.handle('get-logs', () => {
 ipcMain.handle('open-folder', async (_e, folderPath: string) => {
   const result = await shell.openPath(folderPath)
   return { success: !result, error: result || null }
+})
+
+ipcMain.handle('check-plugins', async () => {
+  try {
+    const plugins = await checkPluginsForUpdates()
+    return { success: true, data: plugins }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('update-plugins', async () => {
+  try {
+    const result = await updatePlugins()
+    return { success: true, data: result }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
 })

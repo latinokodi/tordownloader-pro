@@ -36,6 +36,16 @@ const api = {
     ipcRenderer.on('flaresolverr-ready', callback)
     return () => ipcRenderer.removeAllListeners('flaresolverr-ready')
   },
+  onSearchProgress: (callback: (progress: any) => void) => {
+    ipcRenderer.on('search-progress', (_e, progress) => callback(progress))
+    return () => ipcRenderer.removeAllListeners('search-progress')
+  },
+  onSearchError: (callback: (error: string) => void) => {
+    ipcRenderer.on('search-error', (_e, error) => callback(error))
+    return () => ipcRenderer.removeAllListeners('search-error')
+  },
+  checkPlugins: (): Promise<any> => ipcRenderer.invoke('check-plugins'),
+  updatePlugins: (): Promise<any> => ipcRenderer.invoke('update-plugins'),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

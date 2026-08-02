@@ -26,6 +26,12 @@ from typing import Optional
 # ── Ensure the plugins directory is on sys.path ─────────
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 ENGINES_DIR = os.path.join(PLUGIN_DIR, 'engines')
+
+# User plugins directory (updated plugins take priority)
+USER_PLUGINS_DIR = os.environ.get('USER_PLUGINS_DIR', '')
+if USER_PLUGINS_DIR and not os.path.isdir(USER_PLUGINS_DIR):
+    USER_PLUGINS_DIR = ''
+
 sys.path.insert(0, PLUGIN_DIR)
 
 # Import our shims — these replace qBittorrent's runtime
@@ -98,7 +104,7 @@ def normalize_result(raw: dict) -> Optional[dict]:
     }
 
 
-def load_plugin(engine_file: str) -> Optional[tuple]:
+def load_plugin(engine_file: str, source_dir: str = ENGINES_DIR) -> Optional[tuple]:
     """
     Import a plugin module and return (short_name, plugin_instance).
     Returns None if loading fails for any reason.
@@ -112,7 +118,7 @@ def load_plugin(engine_file: str) -> Optional[tuple]:
         import importlib
         spec = importlib.util.spec_from_file_location(
             module_name,
-            os.path.join(ENGINES_DIR, engine_file)
+            os.path.join(source_dir, engine_file)
         )
         if spec is None or spec.loader is None:
             return None
@@ -169,11 +175,16 @@ def deduplicate(results: list) -> list:
 
 
 def main():
-    if len(sys.argv) < 2 or not sys.argv[1].strip():
+    args = sys.argv[1:]
+    stream_mode = '--stream' in args
+
+    # Filter out flags to get the query
+    query_args = [a for a in args if not a.startswith('--')]
+    if not query_args or not query_args[0].strip():
         print(json.dumps([]))
         sys.exit(0)
 
-    query = sys.argv[1].strip()
+    query = query_args[0].strip()
 
     # Discover plugins
     if not os.path.isdir(ENGINES_DIR):
@@ -181,11 +192,20 @@ def main():
         sys.exit(0)
 
     engine_files = sorted(f for f in os.listdir(ENGINES_DIR) if f.endswith('.py'))
+    
+    # Prepend user plugins (they override bundled ones of the same name)
+    if USER_PLUGINS_DIR:
+        user_files = sorted(f for f in os.listdir(USER_PLUGINS_DIR) if f.endswith('.py'))
+        engine_files = user_files + [f for f in engine_files if f not in set(user_files)]
 
     # Load all plugins
     plugins = []
     for ef in engine_files:
-        result = load_plugin(ef)
+        user_path = os.path.join(USER_PLUGINS_DIR, ef) if USER_PLUGINS_DIR else None
+        source_dir = USER_PLUGINS_DIR if (user_path and os.path.exists(user_path)) else ENGINES_DIR
+        if source_dir not in sys.path:
+            sys.path.insert(0, source_dir)
+        result = load_plugin(ef, source_dir)
         if result:
             plugins.append(result)
 
@@ -197,24 +217,52 @@ def main():
     all_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(plugins), 8)) as executor:
         futures = {
-            executor.submit(run_plugin, name, plugin, query): name
+            executor.submit(run_plugin, name, plugin, query): (name, plugin)
             for name, plugin in plugins
         }
+
+        if stream_mode:
+            # Stream mode: output JSON lines as each engine completes
+            # Send engine_start for all engines first
+            for name, _plugin in plugins:
+                line = json.dumps({'type': 'engine_start', 'engine': name})
+                print(line, flush=True)
+
         try:
             for future in concurrent.futures.as_completed(futures, timeout=45):
-                name = futures[future]
+                name, _plugin = futures[future]
                 try:
                     results = future.result(timeout=30)
                     all_results.extend(results)
+
+                    if stream_mode:
+                        # Emit results immediately for this engine
+                        line = json.dumps({
+                            'type': 'engine_results',
+                            'engine': name,
+                            'results': results,
+                        })
+                        print(line, flush=True)
                 except (concurrent.futures.TimeoutError, Exception):
-                    pass
+                    if stream_mode:
+                        line = json.dumps({
+                            'type': 'engine_results',
+                            'engine': name,
+                            'results': [],
+                        })
+                        print(line, flush=True)
         except TimeoutError:
             # Some plugins are still running — collect results from completed ones
             pass
 
     # Deduplicate and output
     final = deduplicate(all_results)
-    print(json.dumps(final, indent=2))
+
+    if stream_mode:
+        done_line = json.dumps({'type': 'done', 'total': len(final)})
+        print(done_line, flush=True)
+    else:
+        print(json.dumps(final, indent=2))
 
 
 if __name__ == '__main__':

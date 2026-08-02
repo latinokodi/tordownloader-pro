@@ -15,6 +15,7 @@ export interface SearchTab {
   results: SearchResult[] | null
   loading: boolean
   error: string | null
+  currentEngine: string | null
 }
 
 interface SearchTabsState {
@@ -24,6 +25,9 @@ interface SearchTabsState {
   addTab: (query: string) => string
   setTabResult: (id: string, results: SearchResult[]) => void
   setTabError: (id: string, error: string) => void
+  appendResults: (id: string, results: SearchResult[]) => void
+  setCurrentEngine: (id: string, engine: string | null) => void
+  markSearchDone: (id: string) => void
   switchTab: (id: string) => void
   closeTab: (id: string) => void
 }
@@ -40,7 +44,7 @@ export const useSearchTabsStore = create<SearchTabsState>((set, get) => ({
       activeTabId: id,
       tabs: {
         ...s.tabs,
-        [id]: { query, results: null, loading: true, error: null },
+        [id]: { query, results: null, loading: true, error: null, currentEngine: null },
       },
     }))
     return id
@@ -55,6 +59,49 @@ export const useSearchTabsStore = create<SearchTabsState>((set, get) => ({
     set((s) => ({
       tabs: { ...s.tabs, [id]: { ...s.tabs[id], error, loading: false } },
     })),
+
+  appendResults: (id, newResults) =>
+    set((s) => {
+      const tab = s.tabs[id]
+      if (!tab) return s
+      const existing = tab.results ?? []
+      // Deduplicate by info_hash, keeping highest seeders
+      const seen = new Map<string, SearchResult>()
+      for (const r of existing) {
+        const key = r.info_hash || r.link || ''
+        if (key) seen.set(key, r)
+      }
+      for (const r of newResults) {
+        const key = r.info_hash || r.link || ''
+        if (!key) continue
+        const old = seen.get(key)
+        if (!old || r.seeders > old.seeders) {
+          seen.set(key, r)
+        }
+      }
+      const merged = [...seen.values()].sort((a, b) => b.seeders - a.seeders)
+      return {
+        tabs: { ...s.tabs, [id]: { ...tab, results: merged } },
+      }
+    }),
+
+  setCurrentEngine: (id, engine) =>
+    set((s) => {
+      const tab = s.tabs[id]
+      if (!tab) return s
+      return {
+        tabs: { ...s.tabs, [id]: { ...tab, currentEngine: engine } },
+      }
+    }),
+
+  markSearchDone: (id) =>
+    set((s) => {
+      const tab = s.tabs[id]
+      if (!tab) return s
+      return {
+        tabs: { ...s.tabs, [id]: { ...tab, loading: false, currentEngine: null } },
+      }
+    }),
 
   switchTab: (id) => set({ activeTabId: id }),
 
