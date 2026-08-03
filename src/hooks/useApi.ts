@@ -14,8 +14,8 @@ export async function api<T = unknown>(
   try {
     if (path.startsWith('/settings') && method === 'GET') return await electronAPI.getSettings() as T
     if (path.startsWith('/settings') && method === 'POST') return await electronAPI.setSettings(body) as T
-    if (path.startsWith('/downloads/add-torrent-url')) return await electronAPI.addTorrentUrl(body.url) as T
-    if (path.startsWith('/downloads/add')) return await electronAPI.addMagnet(body.magnet) as T
+    if (path.startsWith('/downloads/add-torrent-url')) return await electronAPI.addTorrentUrl(body.url, body.service) as T
+    if (path.startsWith('/downloads/add')) return await electronAPI.addMagnet(body.magnet, body.service) as T
     if (path.startsWith('/downloads') && method === 'GET') return await electronAPI.getDownloads() as T
     if (path === '/downloads/clear-completed' && method === 'POST') return await electronAPI.clearCompleted() as T
     if (path.startsWith('/downloads/') && method === 'DELETE') {
@@ -28,7 +28,7 @@ export async function api<T = unknown>(
     }
     if (path.startsWith('/search')) return await electronAPI.searchMetaSearch(body.query) as T
     if (path.startsWith('/select-folder')) return { path: await electronAPI.selectFolder() } as T
-    
+
     if (path === '/auth/start') return await electronAPI.authStart() as T
     if (path === '/auth/user') return await electronAPI.getUserInfo() as T
     if (path.startsWith('/auth/poll/')) {
@@ -36,10 +36,20 @@ export async function api<T = unknown>(
       return await electronAPI.authPoll(deviceCode) as T
     }
     if (path === '/settings/test-metasearch') return await electronAPI.testMetaSearch() as T
-    
+
     if (path === '/plugins/check') return await electronAPI.checkPlugins() as T
     if (path === '/plugins/update') return await electronAPI.updatePlugins() as T
-    
+
+    // Real-Debrid routes
+    if (path === '/rd/auth/start') return await electronAPI.rdAuthStart() as T
+    if (path.startsWith('/rd/auth/poll/')) {
+      const deviceCode = path.split('/')[4]
+      return await electronAPI.rdAuthPoll(deviceCode) as T
+    }
+    if (path === '/rd/user') return await electronAPI.rdUserInfo() as T
+    if (path === '/rd/traffic') return await electronAPI.rdTraffic() as T
+    if (path === '/rd/select-files') return await electronAPI.rdSelectFiles(body.torrentId) as T
+
     // Fallback
     return { success: true } as T
   } catch (err: any) {

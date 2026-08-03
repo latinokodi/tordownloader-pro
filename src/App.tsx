@@ -7,12 +7,13 @@ import { LogPanel } from './components/LogPanel'
 import { useSearchTabsStore } from './store/searchTabs'
 import { useWebSocket } from './hooks/useWebSocket'
 import { api } from './hooks/useApi'
-import { useT } from './i18n'
+import { useT, useTranslateError } from './i18n'
 import { LangToggle } from './i18n/LangToggle'
 import { Settings, DownloadCloud, Search, Magnet, ScrollText, FolderOpen } from 'lucide-react'
 
 function App() {
   const t = useT()
+  const trErr = useTranslateError()
   const [query, setQuery] = useState('')
   const [magnetUrl, setMagnetUrl] = useState('')
   const [addingMagnet, setAddingMagnet] = useState(false)
@@ -22,7 +23,10 @@ function App() {
   const [downloads, setDownloads] = useState<any[]>([])
   const [destFolder, setDestFolder] = useState('')
   const [flaresolverrReady, setFlareSolverrReady] = useState(false)
-  
+  const [downloadService, setDownloadService] = useState<'torbox' | 'realdebrid'>('torbox')
+  const [hasTorbox, setHasTorbox] = useState(false)
+  const [hasRealdebrid, setHasRealdebrid] = useState(false)
+
   const { addTab, setTabResult, setTabError, appendResults, setCurrentEngine, markSearchDone } = useSearchTabsStore()
 
   useEffect(() => {
@@ -34,6 +38,12 @@ function App() {
   const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type })
   }, [])
+
+  const isServiceAvailable = useCallback((): boolean => {
+    if (downloadService === 'torbox') return hasTorbox
+    if (downloadService === 'realdebrid') return hasRealdebrid
+    return false
+  }, [downloadService, hasTorbox, hasRealdebrid])
 
   const refreshDownloads = useCallback(async () => {
     const res = await api<any>('/downloads')
@@ -56,6 +66,13 @@ function App() {
     // Load destination folder from settings
     api<any>('/settings').then((settings: any) => {
       if (settings?.destination_folder) setDestFolder(settings.destination_folder)
+      const tb = !!settings?.torbox_token
+      const rd = !!settings?.realdebrid_token
+      setHasTorbox(tb)
+      setHasRealdebrid(rd)
+      // Auto-select the only available service when just one is configured
+      if (tb && !rd) setDownloadService('torbox')
+      else if (!tb && rd) setDownloadService('realdebrid')
     }).catch(() => {})
     
     if ((window as any).electronAPI?.onDownloadsUpdated) {
@@ -126,6 +143,11 @@ function App() {
     const raw = magnetUrl.trim()
     if (!raw) return
 
+    if (!isServiceAvailable()) {
+      showToast(t.magnetBar.noService, 'error')
+      return
+    }
+
     setAddingMagnet(true)
     setMagnetUrl('')
 
@@ -133,9 +155,9 @@ function App() {
       let res: any
 
       if (raw.startsWith('magnet:?')) {
-        res = await api<any>('/downloads/add', 'POST', { magnet: raw })
+        res = await api<any>('/downloads/add', 'POST', { magnet: raw, service: downloadService })
       } else if (raw.startsWith('http://') || raw.startsWith('https://')) {
-        res = await api<any>('/downloads/add-torrent-url', 'POST', { url: raw })
+        res = await api<any>('/downloads/add-torrent-url', 'POST', { url: raw, service: downloadService })
       } else {
         showToast(t.toasts.invalidInput, 'error')
         setAddingMagnet(false)
@@ -147,7 +169,7 @@ function App() {
         showToast(label, 'success')
         await refreshDownloads()
       } else {
-        showToast(`${t.toasts.error}: ${res.error || res.detail || t.toasts.unknownError}`, 'error')
+        showToast(`${t.toasts.error}: ${trErr(res.error || res.detail || t.toasts.unknownError)}`, 'error')
       }
     } catch (err: any) {
       showToast(err.message || t.toasts.failedAdd, 'error')
@@ -189,7 +211,24 @@ function App() {
     }
   }
 
-  const activeCloud = downloads.filter((d) => !['completed', 'cached', 'finished'].includes((d.status || '').toLowerCase())).length
+  const handleSettingsClose = async () => {
+    setShowSettings(false)
+    // Re-fetch settings to refresh service availability
+    try {
+      const settings: any = await api<any>('/settings')
+      if (settings?.destination_folder) setDestFolder(settings.destination_folder)
+      const tb = !!settings?.torbox_token
+      const rd = !!settings?.realdebrid_token
+      setHasTorbox(tb)
+      setHasRealdebrid(rd)
+      // Auto-select the only available service when just one is configured
+      if (tb && !rd) setDownloadService('torbox')
+      else if (!tb && rd) setDownloadService('realdebrid')
+    } catch (_) {}
+  }
+
+  // RD uses 'downloaded', TorBox uses 'completed'/'cached'/'finished'
+  const activeCloud = downloads.filter((d) => !['completed', 'cached', 'finished', 'downloaded'].includes((d.status || '').toLowerCase())).length
   const activeLocal = downloads.filter((d) => (d.local_status || '').toLowerCase().startsWith('downloading')).length
 
   return (
@@ -274,10 +313,22 @@ function App() {
           <button
             type="submit"
             className="btn btn-accent whitespace-nowrap font-mono text-xs"
-            disabled={addingMagnet || !magnetUrl.trim()}
+            disabled={addingMagnet || !magnetUrl.trim() || !isServiceAvailable()}
+            title={!isServiceAvailable() ? t.magnetBar.noService : undefined}
           >
             {addingMagnet ? t.magnetBar.adding : t.magnetBar.addLink}
           </button>
+          {(hasTorbox && hasRealdebrid) && (
+            <select
+              className="btn border border-border text-xs px-2 bg-bg-deep font-mono text-text-main"
+              value={downloadService}
+              onChange={(e) => setDownloadService(e.target.value as 'torbox' | 'realdebrid')}
+              disabled={addingMagnet}
+            >
+              <option value="torbox">TorBox</option>
+              <option value="realdebrid">Real-Debrid</option>
+            </select>
+          )}
         </form>
         )}
 
@@ -293,12 +344,22 @@ function App() {
                   onChange={(e) => setQuery(e.target.value)}
                 />
                 <button type="submit" className="btn btn-accent">{t.search.initSearch}</button>
+                {(hasTorbox && hasRealdebrid) && (
+                  <select
+                    className="btn border border-border text-xs px-2 bg-bg-deep font-mono text-text-main"
+                    value={downloadService}
+                    onChange={(e) => setDownloadService(e.target.value as 'torbox' | 'realdebrid')}
+                  >
+                    <option value="torbox">TorBox</option>
+                    <option value="realdebrid">Real-Debrid</option>
+                  </select>
+                )}
               </form>
 
               <SearchTabsBar />
               
               <div className="flex-1 overflow-auto glass-panel p-4">
-                <SearchTab onDownloadAdded={refreshDownloads} showToast={showToast} />
+                <SearchTab onDownloadAdded={refreshDownloads} showToast={showToast} service={downloadService} serviceAvailable={isServiceAvailable()} />
               </div>
             </div>
           )}
@@ -361,9 +422,9 @@ function App() {
       </main>
 
       {showSettings && (
-        <SettingsModal 
-          onClose={() => setShowSettings(false)} 
-          showToast={showToast} 
+        <SettingsModal
+          onClose={handleSettingsClose}
+          showToast={showToast}
         />
       )}
 

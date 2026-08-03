@@ -12,6 +12,17 @@ const TORBOX_CDN_DOMAINS = [
   'tb-cdn.cx',    // TorBox CDN edge nodes (alt)
 ];
 
+/** Real-Debrid CDN domains — RD generates download URLs via /unrestrict/link.
+ *  These URLs are always on RD's infrastructure.  Subdomains include
+ *  *.download.real-debrid.com, *.rd.nu, and CDN partner domains.
+ *  See https://api.real-debrid.com/ → /unrestrict/link → "download" field. */
+const REALDEBRID_CDN_DOMAINS = [
+  'real-debrid.com',
+  'rd.nu',
+];
+
+const ALL_CDN_DOMAINS = [...TORBOX_CDN_DOMAINS, ...REALDEBRID_CDN_DOMAINS];
+
 function isTorboxCDN(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
@@ -21,7 +32,16 @@ function isTorboxCDN(url: string): boolean {
   }
 }
 
-export { isTorboxCDN };
+function isDebridCDN(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ALL_CDN_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
+  } catch {
+    return false;
+  }
+}
+
+export { isTorboxCDN, isDebridCDN };
 
 export interface DownloadProgress {
   bytes_done: number;
@@ -38,12 +58,12 @@ export class Downloader {
     private destPath: string,
     private expectedSize: number = 0
   ) {
-    // HARD GUARD: refuse to download from anything other than TorBox CDN.
+    // HARD GUARD: refuse to download from anything other than debrid CDNs.
     // This app is debrid-only — it NEVER downloads via torrents/seeds/P2P.
-    if (!isTorboxCDN(url)) {
+    if (!isDebridCDN(url)) {
       throw new Error(
-        `Security: Download rejected. URL ${url} is not a TorBox CDN domain. ` +
-        `This app only downloads via the TorBox debrid service — never via torrents/seeds/P2P.`
+        `Security: Download rejected. URL ${url} is not a recognized debrid CDN domain. ` +
+        `This app only downloads via debrid services (TorBox / Real-Debrid) — never via torrents/seeds/P2P.`
       );
     }
   }

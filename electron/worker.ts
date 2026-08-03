@@ -1,6 +1,7 @@
 import { TorboxAPI } from './torbox';
+import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
-import { Downloader, DownloadProgress, isTorboxCDN } from './downloader';
+import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
 import { BrowserWindow } from 'electron';
@@ -89,58 +90,20 @@ export function startWorker(mainWindow: BrowserWindow | null) {
   workerInterval = setInterval(async () => {
     try {
       const settings = getSettings();
-      if (!settings || !settings.torbox_token) return;
+      if (!settings) return;
 
-      const tb = new TorboxAPI(settings.torbox_token);
-      const res = await tb.getTorrents();
+      // ── Poll TorBox ──────────────────────────
+      if (settings.torbox_token) {
+        await pollTorBox(settings, mainWindow);
+      }
 
-      if (res.success && res.data) {
-        for (const rawDlData of res.data) {
-          const dlData = TorboxAPI.normalizeTorrent(rawDlData);
-          const { id: tid, hash: torrentHash } = TorboxAPI.torrentIdentity(dlData);
-          const name = dlData.name || 'Unknown';
-          const state = dlData.download_state || 'unknown';
-          const progress = TorboxAPI.normalizeProgress(dlData.progress, state);
+      // ── Poll Real-Debrid ─────────────────────
+      if (settings.realdebrid_token) {
+        await pollRealDebrid(settings, mainWindow);
+      }
 
-          if (!tid) continue;
-
-          let record = getDownloadByTorboxId(tid);
-          if (!record) {
-            continue;
-          }
-
-          updateDownload(tid, {
-            status: state,
-            progress: progress,
-            ...(record.name === 'Pending...' && name !== 'Unknown' ? { name } : {})
-          });
-
-          record = getDownloadByTorboxId(tid)!;
-
-          const completedStates = ['completed', 'cached', 'finished'];
-          
-          if (completedStates.includes(state.toLowerCase()) && ['pending', 'queued'].includes(record.local_status)) {
-            if (!activeLocalDownloads.has(tid)) {
-              updateDownload(tid, { local_status: 'queued' });
-              activeLocalDownloads.set(tid, true);
-              runLocalDownload(tid, dlData, settings.destination_folder, settings.torbox_token, mainWindow).catch(err => {
-                console.error(`Local download failed for ${tid}:`, err);
-                updateDownload(tid, { local_status: `failed: ${err.message}` });
-                activeLocalDownloads.delete(tid);
-                if (mainWindow) mainWindow.webContents.send('downloads-updated');
-              });
-            }
-          }
-
-          if (settings.auto_remove_completed && completedStates.includes(state.toLowerCase()) && record.local_status === 'completed') {
-            await tb.controlTorrent(dlData.id, 'Delete');
-            deleteDownload(tid);
-          }
-        }
-
-        if (mainWindow) {
-          mainWindow.webContents.send('downloads-updated');
-        }
+      if (mainWindow) {
+        mainWindow.webContents.send('downloads-updated');
       }
     } catch (err) {
       console.error('Worker polling loop failed', err);
@@ -148,7 +111,148 @@ export function startWorker(mainWindow: BrowserWindow | null) {
   }, 10000);
 }
 
-async function runLocalDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
+// ── TorBox polling ────────────────────────────────────
+
+async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
+  const tb = new TorboxAPI(settings.torbox_token);
+  const res = await tb.getTorrents();
+
+  if (res.success && res.data) {
+    for (const rawDlData of res.data) {
+      const dlData = TorboxAPI.normalizeTorrent(rawDlData);
+      const { id: tid } = TorboxAPI.torrentIdentity(dlData);
+      const name = dlData.name || 'Unknown';
+      const state = dlData.download_state || 'unknown';
+      const progress = TorboxAPI.normalizeProgress(dlData.progress, state);
+
+      if (!tid) continue;
+
+      let record = getDownloadByTorboxId(tid);
+      if (!record) continue;
+
+      updateDownload(tid, {
+        status: state,
+        progress: progress,
+        ...(record.name === 'Pending...' && name !== 'Unknown' ? { name } : {})
+      });
+
+      record = getDownloadByTorboxId(tid)!;
+
+      const completedStates = ['completed', 'cached', 'finished'];
+
+      if (completedStates.includes(state.toLowerCase()) && ['pending', 'queued'].includes(record.local_status)) {
+        if (!activeLocalDownloads.has(tid)) {
+          updateDownload(tid, { local_status: 'queued' });
+          activeLocalDownloads.set(tid, true);
+          runTorboxDownload(tid, dlData, settings.destination_folder, settings.torbox_token, mainWindow).catch(err => {
+            console.error(`Local download failed for ${tid}:`, err);
+            updateDownload(tid, { local_status: `failed: ${err.message}` });
+            activeLocalDownloads.delete(tid);
+            if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          });
+        }
+      }
+
+      if (settings.auto_remove_completed && completedStates.includes(state.toLowerCase()) && record.local_status === 'completed') {
+        await tb.controlTorrent(dlData.id, 'Delete');
+        deleteDownload(tid);
+      }
+    }
+  }
+}
+
+// ── Real-Debrid polling ────────────────────────────────
+
+async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
+  const rd = new RealDebridAPI(settings.realdebrid_token);
+  const res = await rd.getTorrents();
+
+  if (res.success && Array.isArray(res.data)) {
+    for (const rawDlData of res.data) {
+      const dlData = RealDebridAPI.normalizeTorrent(rawDlData);
+      const { id: tid } = RealDebridAPI.torrentIdentity(dlData);
+      const name = dlData.filename || dlData.name || 'Unknown';
+      const state = dlData.status || 'unknown';
+      const progress = RealDebridAPI.normalizeProgress(dlData.progress, state);
+
+      if (!tid) continue;
+
+      let record = getDownloadByTorboxId(tid);
+      if (!record) continue;
+
+      updateDownload(tid, {
+        status: state,
+        progress: progress,
+        ...(record.name === 'Pending...' && name !== 'Unknown' ? { name } : {})
+      });
+
+      record = getDownloadByTorboxId(tid)!;
+
+      // RD's /torrents list often returns "magnet_conversion" for torrents that have
+      // already progressed.  Call getTorrentInfo to get the real status.
+      // The browser extension does exactly this: see mshll/real-debrid-manager.
+      let effectiveState = state.toLowerCase();
+      if (effectiveState === 'magnet_conversion') {
+        try {
+          const infoRes = await rd.getTorrentInfo(tid);
+          if (infoRes.success && infoRes.data) {
+            const realStatus = (infoRes.data.status || '').toLowerCase();
+            if (realStatus && realStatus !== 'magnet_conversion') {
+              console.log(`[RD] ${name}: magnet_conversion → real status = ${realStatus}`);
+              effectiveState = realStatus;
+              updateDownload(tid, { status: realStatus });
+              if (infoRes.data.filename && record.name === 'Pending...') {
+                updateDownload(tid, { name: infoRes.data.filename || name });
+              }
+              record = getDownloadByTorboxId(tid)!;
+            }
+          }
+        } catch (err) {
+          // getTorrentInfo may fail during early magnet conversion — that's OK
+        }
+      }
+
+      // Auto-select all files when torrent is waiting for file selection
+      if (effectiveState === 'waiting_files_selection') {
+        try {
+          const infoRes = await rd.getTorrentInfo(tid);
+          if (infoRes.success && infoRes.data) {
+            const files = infoRes.data.files || [];
+            if (files.length > 0) {
+              const fileIds = files.map((f: any) => String(f.id));
+              await rd.selectFiles(tid, fileIds);
+              console.log(`[RD] Auto-selected ${fileIds.length} files for ${name}`);
+            }
+          }
+        } catch (err) {
+          console.error(`[RD] Failed to select files for ${tid}:`, err);
+        }
+      }
+
+      const completedStates = ['downloaded', 'finished'];
+
+      if (completedStates.includes(effectiveState) && ['pending', 'queued'].includes(record.local_status)) {
+        if (!activeLocalDownloads.has(tid)) {
+          updateDownload(tid, { local_status: 'queued' });
+          activeLocalDownloads.set(tid, true);
+          runRealdebridDownload(tid, dlData, settings.destination_folder, settings.realdebrid_token, mainWindow).catch(err => {
+            console.error(`RD download failed for ${tid}:`, err);
+            updateDownload(tid, { local_status: `failed: ${err.message}` });
+            activeLocalDownloads.delete(tid);
+            if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          });
+        }
+      }
+
+      if (settings.auto_remove_completed && completedStates.includes(effectiveState) && record.local_status === 'completed') {
+        await rd.deleteTorrent(dlData.id);
+        deleteDownload(tid);
+      }
+    }
+  }
+}
+
+async function runTorboxDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
   try {
     if (!destRoot || !destRoot.trim()) {
       throw new Error('Destination folder is not configured');
@@ -198,12 +302,10 @@ async function runLocalDownload(tid: string, dlData: any, destRoot: string, toke
 
       const downloadUrl = linkRes.data;
 
-      // HARD GUARD: verify the URL is from TorBox CDN before passing to Downloader.
-      // This app is debrid-only — never torrents/seeds/P2P.
-      if (!isTorboxCDN(downloadUrl)) {
+      // HARD GUARD: verify the URL is from a recognized debrid CDN.
+      if (!isDebridCDN(downloadUrl)) {
         throw new Error(
-          `Security: Download URL ${downloadUrl} is not from TorBox CDN. ` +
-          `This app only downloads via the TorBox debrid service.`
+          `Security: Download URL ${downloadUrl} is not from a recognized debrid CDN.`
         );
       }
 
@@ -228,7 +330,7 @@ async function runLocalDownload(tid: string, dlData: any, destRoot: string, toke
           } else {
             overall = Math.floor(((idx / totalFiles) * 100) + (p.progress_percent / totalFiles));
           }
-          
+
           const remaining = totalBytes > 0 ? totalBytes - (completedBytes + p.bytes_done) : 0;
           const eta = formatETA(remaining, p.speed);
 
@@ -265,6 +367,134 @@ async function runLocalDownload(tid: string, dlData: any, destRoot: string, toke
       local_path: destFolder,
     });
     
+  } catch (err: any) {
+    updateDownload(tid, {
+      local_status: `failed: ${err.message}`,
+      local_speed: 0,
+    });
+  } finally {
+    activeLocalDownloads.delete(tid);
+    activeDownloaders.delete(tid);
+    if (mainWindow) mainWindow.webContents.send('downloads-updated');
+  }
+}
+
+// ── Real-Debrid local download ─────────────────────────
+
+async function runRealdebridDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
+  try {
+    if (!destRoot || !destRoot.trim()) {
+      throw new Error('Destination folder is not configured');
+    }
+
+    const rd = new RealDebridAPI(token);
+    const destFolder = destRoot;
+    safeMkdirSync(destFolder);
+
+    // Get torrent info to obtain the links array
+    const infoRes = await rd.getTorrentInfo(tid);
+    if (!infoRes.success || !infoRes.data) {
+      throw new Error('Failed to get torrent info from Real-Debrid');
+    }
+
+    const torrentInfo = infoRes.data;
+    const links: string[] = torrentInfo.links || [];
+    const totalBytes = torrentInfo.bytes || torrentInfo.original_bytes || 0;
+
+    if (links.length === 0) {
+      throw new Error('Real-Debrid returned no download links for this torrent');
+    }
+
+    const totalLinks = links.length;
+    let completedBytes = 0;
+
+    for (let idx = 0; idx < links.length; idx++) {
+      const link = links[idx];
+
+      // Unrestrict the link to get a direct download URL + filename
+      const unrestrictRes = await rd.unrestrictLink(link);
+      if (!unrestrictRes.success || !unrestrictRes.data) {
+        // Skip dead/expired hoster links — don't fail the whole torrent
+        console.warn(`[RD] Skipping link ${idx + 1}/${totalLinks}: unrestrict failed (${unrestrictRes.error || 'unknown'})`);
+        continue;
+      }
+
+      const { download: directUrl, filename, filesize } = unrestrictRes.data;
+      if (!directUrl) {
+        throw new Error(`No download URL returned for link ${idx + 1}/${totalLinks}`);
+      }
+
+      const expectedSize = filesize || 0;
+
+      // Use filename from unrestricted response, fall back to index
+      const safeName = getSafeRelativePath(filename || `part_${idx + 1}`, `part_${idx + 1}`);
+      const filePath = path.join(destFolder, safeName);
+
+      safeMkdirSync(path.dirname(filePath));
+
+      // HARD GUARD
+      if (!isDebridCDN(directUrl)) {
+        throw new Error(
+          `Security: Download URL ${directUrl} is not from a recognized debrid CDN.`
+        );
+      }
+
+      const downloader = new Downloader(directUrl, filePath, expectedSize);
+      activeDownloaders.set(tid, downloader);
+
+      updateDownload(tid, {
+        local_status: `Downloading ${idx + 1}/${totalLinks}...`,
+        local_progress: Math.floor((idx / totalLinks) * 100),
+        local_path: destFolder,
+      });
+      if (mainWindow) mainWindow.webContents.send('downloads-updated');
+
+      let lastUpdate = 0;
+      const onProg = (p: DownloadProgress) => {
+        const now = Date.now();
+        if (now - lastUpdate > 1000) {
+          lastUpdate = now;
+          let overall = 0;
+          if (totalBytes > 0) {
+            overall = Math.floor(((completedBytes + p.bytes_done) / totalBytes) * 100);
+          } else {
+            overall = Math.floor(((idx / totalLinks) * 100) + (p.progress_percent / totalLinks));
+          }
+
+          const remaining = totalBytes > 0 ? totalBytes - (completedBytes + p.bytes_done) : 0;
+          const eta = formatETA(remaining, p.speed);
+
+          updateDownload(tid, {
+            local_status: `Downloading ${idx + 1}/${totalLinks} (${Math.floor(p.progress_percent)}%)`,
+            local_progress: Math.max(0, Math.min(99, overall)),
+            local_speed: Math.floor(p.speed),
+            local_eta: eta,
+            local_path: destFolder,
+          });
+          if (mainWindow) mainWindow.webContents.send('downloads-updated');
+        }
+      };
+
+      const result = await downloader.start(onProg);
+      if (!result.success) {
+        throw new Error(`Failed to download part ${idx + 1}: ${result.error}`);
+      }
+
+      completedBytes += expectedSize || result.bytes_downloaded;
+    }
+
+    // If no links were successfully downloaded, report the failure
+    if (completedBytes === 0 && links.length > 0) {
+      throw new Error(`All ${links.length} link(s) failed to unrestrict or download`);
+    }
+
+    updateDownload(tid, {
+      local_status: 'completed',
+      local_progress: 100,
+      local_speed: 0,
+      local_path: destFolder,
+    });
+
   } catch (err: any) {
     updateDownload(tid, {
       local_status: `failed: ${err.message}`,

@@ -13,6 +13,7 @@ interface Download {
   local_speed?: number
   local_eta?: string
   local_path?: string
+  service?: string
 }
 
 interface Props {
@@ -27,28 +28,55 @@ function formatSpeed(bytesPerSec: number): string {
   return `${(bytesPerSec / 1024 / 1024).toFixed(2)} MB/s`
 }
 
-function cleanStatus(value?: string): string {
+/** Translate a raw status string (from RD/TorBox API or worker) to a human-readable label */
+function translateStatus(value: string | undefined, t: any): string {
   if (!value) return ''
+  const lower = value.toLowerCase()
+
+  // Handle "Downloading X/Y..." and "Downloading X/Y (Z%)" worker messages
+  const dlMatch = lower.match(/^downloading (\d+)\/(\d+)/)
+  if (dlMatch) {
+    const current = dlMatch[1]
+    const total = dlMatch[2]
+    return `${t.downloadCard.phases.downloading} ${current}/${total}`
+  }
+
+  // Handle "failed: message" → show translated "Failed" + original message
+  if (lower.startsWith('failed')) {
+    const msg = value.slice(6).trim()
+    return msg ? `${t.downloadCard.phases.failed}: ${msg}` : t.downloadCard.phases.failed
+  }
+
+  // Handle "queued" (used by worker as local_status before download starts)
+  if (lower === 'queued') return t.downloadCard.phases.queued
+
+  // Look up known status keys in the phases dictionary
+  const phases = t.downloadCard.phases as Record<string, string>
+  if (phases[lower]) return phases[lower]
+
+  // Fallback: capitalize the raw value
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
 function currentPhase(dl: Download, t: any) {
   const cloudState = (dl.status || '').toLowerCase()
   const localState = (dl.local_status || 'pending').toLowerCase()
-  const cloudDone = ['completed', 'cached', 'finished'].includes(cloudState)
+  // RD uses 'downloaded', TorBox uses 'completed'/'cached'/'finished'
+  const cloudDone = ['completed', 'cached', 'finished', 'downloaded'].includes(cloudState)
   const localDone = localState === 'completed'
   const localFailed = localState.startsWith('failed')
 
   if (localDone) return { label: t.downloadCard.complete, progress: 100, color: 'text-success' }
   if (localFailed) return { label: t.downloadCard.localFailed, progress: dl.local_progress ?? 0, color: 'text-danger' }
-  if (cloudDone) return { label: cleanStatus(dl.local_status) || t.downloadCard.pending, progress: dl.local_progress ?? 0, color: 'text-accent' }
-  return { label: cleanStatus(dl.status) || t.downloadCard.pending, progress: dl.progress ?? 0, color: 'text-text-main' }
+  if (cloudDone) return { label: translateStatus(dl.local_status, t) || t.downloadCard.pending, progress: dl.local_progress ?? 0, color: 'text-accent' }
+  return { label: translateStatus(dl.status, t) || t.downloadCard.pending, progress: dl.progress ?? 0, color: 'text-text-main' }
 }
 
 function effectiveSpeed(download: Download): string {
   const cloudState = (download.status || '').toLowerCase()
   const localState = (download.local_status || 'pending').toLowerCase()
-  const cloudDone = ['completed', 'cached', 'finished'].includes(cloudState)
+  // RD uses 'downloaded', TorBox uses 'completed'/'cached'/'finished'
+  const cloudDone = ['completed', 'cached', 'finished', 'downloaded'].includes(cloudState)
   const localActive = localState.startsWith('downloading')
 
   if (cloudDone && localActive && download.local_speed) {
@@ -60,7 +88,8 @@ function effectiveSpeed(download: Download): string {
 function isActive(download: Download): boolean {
   const cloudState = (download.status || '').toLowerCase()
   const localState = (download.local_status || 'pending').toLowerCase()
-  if (['completed', 'cached', 'finished'].includes(cloudState) && localState === 'completed') return false
+  // RD uses 'downloaded', TorBox uses 'completed'/'cached'/'finished'
+  if (['completed', 'cached', 'finished', 'downloaded'].includes(cloudState) && localState === 'completed') return false
   if (localState.startsWith('failed')) return false
   return true
 }
@@ -81,6 +110,9 @@ export function DownloadCard({ download: dl, onDelete, onCancel }: Props) {
             <span>{t.downloadCard.seeds} {dl.seeds ?? 0}</span>
             <span>{effectiveSpeed(dl)}</span>
             {dl.local_eta && <span className="text-accent">{t.downloadCard.eta} {dl.local_eta}</span>}
+            {dl.service && dl.service !== 'torbox' && (
+              <span className="text-[#00a6fb] uppercase font-bold">{dl.service}</span>
+            )}
           </div>
         </div>
       </div>
@@ -121,11 +153,11 @@ export function DownloadCard({ download: dl, onDelete, onCancel }: Props) {
       <div className="grid grid-cols-2 gap-2 text-xs font-mono uppercase bg-bg-deep p-2 border border-border">
         <div>
           <span className="text-text-muted block text-[10px]">{t.downloadCard.cloud}</span>
-          <strong className="text-accent">{cleanStatus(dl.status) || t.downloadCard.pending}</strong>
+          <strong className="text-accent">{translateStatus(dl.status, t) || t.downloadCard.pending}</strong>
         </div>
         <div>
           <span className="text-text-muted block text-[10px]">{t.downloadCard.local}</span>
-          <strong className="truncate block" title={dl.local_status}>{cleanStatus(dl.local_status) || t.downloadCard.pending}</strong>
+          <strong className="truncate block" title={dl.local_status}>{translateStatus(dl.local_status, t) || t.downloadCard.pending}</strong>
         </div>
       </div>
     </article>
