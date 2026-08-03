@@ -60,3 +60,18 @@ export function useLang() {
   const { lang, setLang, toggleLang } = useContext(I18nContext)
   return { lang, setLang, toggleLang }
 }
+
+/** Translate known API error messages (e.g. RD "Infringing file" → "Eliminado por Copyright") */
+export function translateError(message: string, lang: Lang): string {
+  const lower = message.toLowerCase()
+  if (lower.includes('infringing file') || lower.includes('infringing_file')) {
+    return lang === 'es' ? 'Eliminado por Copyright' : 'Infringing File'
+  }
+  return message
+}
+
+/** Hook: returns a function that translates error messages using the current language */
+export function useTranslateError() {
+  const { lang } = useContext(I18nContext)
+  return (message: string) => translateError(message, lang)
+}

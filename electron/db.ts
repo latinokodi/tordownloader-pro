@@ -13,6 +13,10 @@ export function initDB(): void {
     CREATE TABLE IF NOT EXISTS settings (
       id INTEGER PRIMARY KEY,
       torbox_token VARCHAR DEFAULT '',
+      realdebrid_token VARCHAR DEFAULT '',
+      realdebrid_refresh_token VARCHAR DEFAULT '',
+      realdebrid_client_id VARCHAR DEFAULT '',
+      realdebrid_client_secret VARCHAR DEFAULT '',
       destination_folder VARCHAR DEFAULT '',
       auto_remove_completed BOOLEAN DEFAULT 0
     );
@@ -28,15 +32,22 @@ export function initDB(): void {
       local_speed INTEGER DEFAULT 0,
       local_eta VARCHAR DEFAULT '',
       local_path VARCHAR,
+      service VARCHAR DEFAULT 'torbox',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `)
 
-  // Migration: add local_eta column if not present
-  try {
-    db.exec(`ALTER TABLE downloads ADD COLUMN local_eta VARCHAR DEFAULT ''`)
-  } catch (_) {
-    // Column already exists — ignore
+  // Migration: add columns that may not exist in older schema
+  const migrations = [
+    `ALTER TABLE downloads ADD COLUMN local_eta VARCHAR DEFAULT ''`,
+    `ALTER TABLE downloads ADD COLUMN service VARCHAR DEFAULT 'torbox'`,
+    `ALTER TABLE settings ADD COLUMN realdebrid_token VARCHAR DEFAULT ''`,
+    `ALTER TABLE settings ADD COLUMN realdebrid_refresh_token VARCHAR DEFAULT ''`,
+    `ALTER TABLE settings ADD COLUMN realdebrid_client_id VARCHAR DEFAULT ''`,
+    `ALTER TABLE settings ADD COLUMN realdebrid_client_secret VARCHAR DEFAULT ''`,
+  ]
+  for (const sql of migrations) {
+    try { db.exec(sql) } catch (_) { /* Column already exists */ }
   }
   
   // Create a default settings row if not exists
@@ -46,9 +57,15 @@ export function initDB(): void {
   }
 }
 
+export type DebridService = 'torbox' | 'realdebrid'
+
 export interface Settings {
   id: number;
   torbox_token: string;
+  realdebrid_token: string;
+  realdebrid_refresh_token: string;
+  realdebrid_client_id: string;
+  realdebrid_client_secret: string;
   destination_folder: string;
   auto_remove_completed: boolean;
 }
@@ -64,6 +81,7 @@ export interface Download {
   local_speed: number;
   local_eta: string;
   local_path: string | null;
+  service: DebridService;
   created_at: string;
 }
 

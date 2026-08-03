@@ -4,6 +4,10 @@ import { useT } from '../i18n'
 
 interface SettingsSchema {
   torbox_token: string
+  realdebrid_token: string
+  realdebrid_refresh_token: string
+  realdebrid_client_id: string
+  realdebrid_client_secret: string
   destination_folder: string
   auto_remove_completed: boolean
 }
@@ -11,6 +15,12 @@ interface SettingsSchema {
 interface Props {
   onClose: () => void
   showToast: (msg: string, type?: 'success' | 'error') => void
+}
+
+function maskEmail(email: string): string {
+  if (!email || !email.includes('@')) return email
+  const [local, domain] = email.split('@')
+  return local.slice(0, 3) + '\u2022\u2022\u2022' + '@' + domain
 }
 
 export function SettingsModal({ onClose, showToast }: Props) {
@@ -23,7 +33,10 @@ export function SettingsModal({ onClose, showToast }: Props) {
   const [torboxUser, setTorboxUser] = useState<any | null>(null)
   const [checkingPlugins, setCheckingPlugins] = useState(false)
   const [pluginStatus, setPluginStatus] = useState<string | null>(null)
+  const [rdAuthData, setRdAuthData] = useState<any | null>(null)
+  const [rdUser, setRdUser] = useState<any | null>(null)
   const pollTimer = useRef<number | null>(null)
+  const rdPollTimer = useRef<number | null>(null)
 
   const fetchTorboxUser = async () => {
     try {
@@ -36,6 +49,44 @@ export function SettingsModal({ onClose, showToast }: Props) {
     }
   }
 
+  const fetchRdUser = async () => {
+    try {
+      const res = await api<any>('/rd/user')
+      if (res.success && res.data) {
+        setRdUser(res.data)
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const startRdAuth = async () => {
+    try {
+      const res = await api<any>('/rd/auth/start')
+      if (res.success && res.data) {
+        setRdAuthData(res.data)
+        // Poll every 5 seconds
+        rdPollTimer.current = window.setInterval(async () => {
+          const pollRes = await api<any>(`/rd/auth/poll/${res.data.device_code}`)
+          if (pollRes.success) {
+            if (rdPollTimer.current) window.clearInterval(rdPollTimer.current)
+            setRdAuthData(null)
+            showToast(t.settings.realdebridLinked, 'success')
+            const updated = await api<SettingsSchema>('/settings')
+            setSettings(updated)
+            if (updated.realdebrid_token) {
+              await fetchRdUser()
+            }
+          }
+        }, 5000)
+      } else {
+        showToast(res.error || 'Failed to start auth', 'error')
+      }
+    } catch (e: any) {
+      showToast(e.message || 'Auth failed', 'error')
+    }
+  }
+
   useEffect(() => {
     api<SettingsSchema>('/settings')
       .then(async (s) => {
@@ -43,12 +94,16 @@ export function SettingsModal({ onClose, showToast }: Props) {
         if (s.torbox_token) {
           await fetchTorboxUser()
         }
+        if (s.realdebrid_token) {
+          await fetchRdUser()
+        }
       })
       .catch((e) => showToast(e.message, 'error'))
       .finally(() => setLoading(false))
 
     return () => {
       if (pollTimer.current) window.clearInterval(pollTimer.current)
+      if (rdPollTimer.current) window.clearInterval(rdPollTimer.current)
     }
   }, [])
 
@@ -220,12 +275,44 @@ export function SettingsModal({ onClose, showToast }: Props) {
                   <div className="flex flex-col gap-3 w-full">
                     <div className="bg-success/10 text-success border border-success p-3 text-center font-mono text-sm flex flex-col gap-1 items-center justify-center">
                       <span className="font-bold uppercase tracking-wider">{t.settings.accountLinked}</span>
-                      {torboxUser && <span className="opacity-80 lowercase">{torboxUser.email} &bull; {planLabel(torboxUser.plan)}</span>}
+                      {torboxUser && <span className="opacity-80 lowercase">{maskEmail(torboxUser.email || torboxUser.username || '')} &bull; {planLabel(torboxUser.plan)}</span>}
                     </div>
                     <button type="button" onClick={startAuth} className="btn border border-border text-text-main hover:border-accent">{t.settings.relinkAccount}</button>
                   </div>
                 ) : (
                   <button type="button" onClick={startAuth} className="btn btn-accent w-full">{t.settings.linkTorbox}</button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Real-Debrid */}
+          <div className="space-y-4">
+            <h3 className="text-accent font-mono text-sm uppercase tracking-widest border-b border-border pb-2">{t.settings.realdebridIntegration}</h3>
+            {rdAuthData ? (
+              <div className="border border-border bg-bg-deep p-6 text-center space-y-4">
+                <p className="font-mono text-sm text-text-main">
+                  {t.settings.goToEnter}{' '}
+                  <a href={rdAuthData.verification_url || "https://real-debrid.com/device"} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                    https://real-debrid.com/device
+                  </a>{' '}
+                  {t.settings.andEnter}
+                </p>
+                <div className="text-4xl font-black tracking-[0.5em] text-accent font-mono py-4">{rdAuthData.user_code}</div>
+                <div className="text-xs text-text-muted font-mono uppercase animate-pulse">{t.settings.waitingAuth}</div>
+              </div>
+            ) : (
+              <div className="flex justify-center">
+                {settings?.realdebrid_token ? (
+                  <div className="flex flex-col gap-3 w-full">
+                    <div className="bg-success/10 text-success border border-success p-3 text-center font-mono text-sm flex flex-col gap-1 items-center justify-center">
+                      <span className="font-bold uppercase tracking-wider">{t.settings.realdebridLinked}</span>
+                      {rdUser && <span className="opacity-80 lowercase">{maskEmail(rdUser.email || rdUser.username)} &bull; {rdUser.type || (rdUser.premium && rdUser.premium > 0 ? 'Premium' : 'Free')}</span>}
+                    </div>
+                    <button type="button" onClick={startRdAuth} className="btn border border-border text-text-main hover:border-accent">{t.settings.relinkAccount}</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={startRdAuth} className="btn btn-accent w-full">{t.settings.linkRealdebrid}</button>
                 )}
               </div>
             )}
