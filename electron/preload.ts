@@ -36,6 +36,7 @@ const api = {
   },
   getLogs: (): Promise<Array<{ ts: string; text: string; level: string }>> =>
     ipcRenderer.invoke('get-logs'),
+  getVersion: (): Promise<string> => ipcRenderer.invoke('get-app-version'),
   openFolder: (folderPath: string): Promise<{ success: boolean; error: string | null }> =>
     ipcRenderer.invoke('open-folder', folderPath),
   clearCompleted: (): Promise<any> => ipcRenderer.invoke('clear-completed'),
