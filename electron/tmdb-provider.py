@@ -24,25 +24,28 @@ TMDB_IMAGE = 'https://image.tmdb.org/t/p'
 UA = 'TorDownloader-PRO/1.0'
 
 
+class TMDBError(Exception):
+    pass
+
+
 def tmdb_get(path, params=None):
-    """Call TMDB API and return parsed JSON."""
+    """Call TMDB API and return parsed JSON. Raises TMDBError on failure."""
     if params is None:
         params = {}
     params['api_key'] = TMDB_KEY
-    params['language'] = 'es-ES'  # Spanish by default for Latino content
+    params['language'] = 'es-ES'
     qs = urllib.parse.urlencode(params)
     url = f'{TMDB_BASE}{path}?{qs}'
     req = urllib.request.Request(url, headers={'User-Agent': UA})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            body = resp.read()
+            return json.loads(body)
     except Exception as e:
-        print(json.dumps({'error': str(e)}))
-        sys.exit(1)
+        raise TMDBError(str(e)) from e
 
 
 def poster_url(path, size='w342'):
-    """Build full poster URL from TMDB path."""
     if not path:
         return None
     return f'{TMDB_IMAGE}/{size}{path}'
@@ -55,7 +58,6 @@ def backdrop_url(path, size='w780'):
 
 
 def format_item(item, media_type):
-    """Format a TMDB item for the UI."""
     title = item.get('title') or item.get('name', '')
     return {
         'id': item['id'],
@@ -70,10 +72,8 @@ def format_item(item, media_type):
 
 
 def cmd_lists():
-    """Return trending, popular, top_rated for movies and tv."""
     result = {'movies': {}, 'tv': {}}
 
-    # Movies
     for kind in ('trending', 'popular', 'top_rated'):
         if kind == 'trending':
             data = tmdb_get('/trending/movie/week')
@@ -87,7 +87,6 @@ def cmd_lists():
 
         result['movies'][kind] = [format_item(item, 'movie') for item in items[:20]]
 
-    # TV
     for kind in ('trending', 'popular', 'top_rated'):
         if kind == 'trending':
             data = tmdb_get('/trending/tv/week')
@@ -101,17 +100,14 @@ def cmd_lists():
 
         result['tv'][kind] = [format_item(item, 'tv') for item in items[:20]]
 
-    print(json.dumps(result))
+    return result
 
 
 def cmd_load_more(media_type, kind, page):
-    """Load more items for a specific list."""
     page = int(page)
 
-    # Trending has no pagination — return empty for page > 1
     if kind == 'trending':
-        print(json.dumps({'results': [], 'page': page, 'total_pages': 1}))
-        return
+        return {'results': [], 'page': page, 'total_pages': 1}
 
     if media_type == 'movie':
         if kind == 'popular':
@@ -127,11 +123,10 @@ def cmd_load_more(media_type, kind, page):
     items = data.get('results', [])
     result = [format_item(item, media_type) for item in items]
     total_pages = data.get('total_pages', 1)
-    print(json.dumps({'results': result, 'page': page, 'total_pages': min(total_pages, 25)}))
+    return {'results': result, 'page': page, 'total_pages': min(total_pages, 25)}
 
 
 def cmd_detail(tmdb_id, media_type):
-    """Return movie or series detail with IMDB ID."""
     if media_type == 'movie':
         data = tmdb_get(f'/movie/{tmdb_id}')
         ext = tmdb_get(f'/movie/{tmdb_id}/external_ids')
@@ -152,15 +147,14 @@ def cmd_detail(tmdb_id, media_type):
                 'poster': poster_url(s.get('poster_path')),
             }
             for s in data.get('seasons', [])
-            if s.get('season_number', 0) > 0  # skip specials (season 0)
+            if s.get('season_number', 0) > 0
         ]
         result['genres'] = [g['name'] for g in data.get('genres', [])]
 
-    print(json.dumps(result))
+    return result
 
 
 def cmd_season(tmdb_id, season_number):
-    """Return episode list for a season."""
     data = tmdb_get(f'/tv/{tmdb_id}/season/{season_number}')
     episodes = []
     for ep in data.get('episodes', []):
@@ -171,11 +165,10 @@ def cmd_season(tmdb_id, season_number):
             'still': poster_url(ep.get('still_path'), 'w300'),
             'air_date': ep.get('air_date', ''),
         })
-    print(json.dumps({'season_number': season_number, 'episodes': episodes}))
+    return {'season_number': season_number, 'episodes': episodes}
 
 
 def cmd_search(query):
-    """Search TMDB for movies and TV shows."""
     params = {'query': query, 'page': 1}
     data = tmdb_get('/search/multi', params)
     results = []
@@ -184,7 +177,7 @@ def cmd_search(query):
         if media_type not in ('movie', 'tv'):
             continue
         results.append(format_item(item, media_type))
-    print(json.dumps(results))
+    return results
 
 
 def main():
@@ -198,18 +191,25 @@ def main():
         sys.exit(1)
 
     cmd = args[0]
-    if cmd == 'lists':
-        cmd_lists()
-    elif cmd == 'detail' and len(args) >= 3:
-        cmd_detail(args[1], args[2])
-    elif cmd == 'season' and len(args) >= 3:
-        cmd_season(args[1], args[2])
-    elif cmd == 'search' and len(args) >= 2:
-        cmd_search(args[1])
-    elif cmd == 'load_more' and len(args) >= 4:
-        cmd_load_more(args[1], args[2], args[3])
-    else:
-        print(json.dumps({'error': f'Unknown command: {cmd}'}))
+    try:
+        if cmd == 'lists':
+            result = cmd_lists()
+        elif cmd == 'detail' and len(args) >= 3:
+            result = cmd_detail(args[1], args[2])
+        elif cmd == 'season' and len(args) >= 3:
+            result = cmd_season(args[1], args[2])
+        elif cmd == 'search' and len(args) >= 2:
+            result = cmd_search(args[1])
+        elif cmd == 'load_more' and len(args) >= 4:
+            result = cmd_load_more(args[1], args[2], args[3])
+        else:
+            print(json.dumps({'error': f'Unknown command: {cmd}'}))
+            sys.exit(1)
+
+        print(json.dumps(result))
+
+    except TMDBError as e:
+        print(json.dumps({'error': str(e)}))
         sys.exit(1)
 
 

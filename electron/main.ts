@@ -612,13 +612,20 @@ ipcMain.handle('tmdb-lists', async () => {
     })
 
     let stdout = ''
+    let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
     proc.on('close', () => {
       try {
         const data = JSON.parse(stdout)
-        resolve({ success: true, data })
+        if (data.error) {
+          resolve({ success: false, error: data.error })
+        } else {
+          resolve({ success: true, data })
+        }
       } catch {
-        resolve({ success: false, error: 'Failed to parse TMDB response' })
+        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
     proc.on('error', (err) => resolve({ success: false, error: err.message }))
@@ -640,13 +647,20 @@ ipcMain.handle('tmdb-detail', async (_e, tmdbId: number, mediaType: string) => {
     })
 
     let stdout = ''
+    let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
     proc.on('close', () => {
       try {
         const data = JSON.parse(stdout)
-        resolve({ success: true, data })
+        if (data.error) {
+          resolve({ success: false, error: data.error })
+        } else {
+          resolve({ success: true, data })
+        }
       } catch {
-        resolve({ success: false, error: 'Failed to parse TMDB response' })
+        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
     proc.on('error', (err) => resolve({ success: false, error: err.message }))
@@ -668,13 +682,20 @@ ipcMain.handle('tmdb-season', async (_e, tmdbId: number, seasonNumber: number) =
     })
 
     let stdout = ''
+    let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
     proc.on('close', () => {
       try {
         const data = JSON.parse(stdout)
-        resolve({ success: true, data })
+        if (data.error) {
+          resolve({ success: false, error: data.error })
+        } else {
+          resolve({ success: true, data })
+        }
       } catch {
-        resolve({ success: false, error: 'Failed to parse TMDB response' })
+        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
     proc.on('error', (err) => resolve({ success: false, error: err.message }))
@@ -696,13 +717,20 @@ ipcMain.handle('tmdb-search', async (_e, query: string) => {
     })
 
     let stdout = ''
+    let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
     proc.on('close', () => {
       try {
         const data = JSON.parse(stdout)
-        resolve({ success: true, data })
+        if (data.error) {
+          resolve({ success: false, error: data.error })
+        } else {
+          resolve({ success: true, data })
+        }
       } catch {
-        resolve({ success: false, error: 'Failed to parse TMDB response' })
+        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
     proc.on('error', (err) => resolve({ success: false, error: err.message }))
@@ -724,13 +752,20 @@ ipcMain.handle('tmdb-load-more', async (_e, mediaType: string, kind: string, pag
     })
 
     let stdout = ''
+    let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
     proc.on('close', () => {
       try {
         const data = JSON.parse(stdout)
-        resolve({ success: true, data })
+        if (data.error) {
+          resolve({ success: false, error: data.error })
+        } else {
+          resolve({ success: true, data })
+        }
       } catch {
-        resolve({ success: false, error: 'Failed to parse TMDB response' })
+        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
     proc.on('error', (err) => resolve({ success: false, error: err.message }))
