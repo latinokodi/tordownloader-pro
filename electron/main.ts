@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import path from 'path'
+import { spawn } from 'child_process'
 import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, Settings } from './db'
 import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
 import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr } from './flaresolverr'
@@ -553,4 +554,284 @@ ipcMain.handle('update-plugins', async () => {
   } catch (error: any) {
     return { success: false, error: error.message }
   }
+})
+
+// ── TMDB Discover IPC ─────────────────────────
+
+function getRunnerPath(scriptName: string): string {
+  if (process.env.VITE_DEV_SERVER_URL) {
+    return path.join(__dirname, '..', 'electron', scriptName)
+  }
+  return path.join(process.resourcesPath || app.getAppPath(), scriptName)
+}
+
+function spawnPython(scriptName: string, args: string[]): { cmd: string; allArgs: string[] } {
+  const scriptPath = getRunnerPath(scriptName)
+  if (scriptPath.endsWith('.py')) {
+    return { cmd: 'python', allArgs: [scriptPath, ...args] }
+  }
+  return { cmd: scriptPath, allArgs: args }
+}
+
+ipcMain.handle('tmdb-lists', async () => {
+  const settings = getSettings()
+  if (!settings.tmdb_api_key) {
+    return { success: false, error: 'TMDB API key not configured' }
+  }
+
+  return new Promise((resolve) => {
+    const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['lists'])
+    const proc = spawn(cmd, allArgs, {
+      windowsHide: true,
+      timeout: 30_000,
+      env: { ...process.env, TMDB_API_KEY: settings.tmdb_api_key },
+    })
+
+    let stdout = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.on('close', () => {
+      try {
+        const data = JSON.parse(stdout)
+        resolve({ success: true, data })
+      } catch {
+        resolve({ success: false, error: 'Failed to parse TMDB response' })
+      }
+    })
+    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+  })
+})
+
+ipcMain.handle('tmdb-detail', async (_e, tmdbId: number, mediaType: string) => {
+  const settings = getSettings()
+  if (!settings.tmdb_api_key) {
+    return { success: false, error: 'TMDB API key not configured' }
+  }
+
+  return new Promise((resolve) => {
+    const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['detail', String(tmdbId), mediaType])
+    const proc = spawn(cmd, allArgs, {
+      windowsHide: true,
+      timeout: 30_000,
+      env: { ...process.env, TMDB_API_KEY: settings.tmdb_api_key },
+    })
+
+    let stdout = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.on('close', () => {
+      try {
+        const data = JSON.parse(stdout)
+        resolve({ success: true, data })
+      } catch {
+        resolve({ success: false, error: 'Failed to parse TMDB response' })
+      }
+    })
+    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+  })
+})
+
+ipcMain.handle('tmdb-season', async (_e, tmdbId: number, seasonNumber: number) => {
+  const settings = getSettings()
+  if (!settings.tmdb_api_key) {
+    return { success: false, error: 'TMDB API key not configured' }
+  }
+
+  return new Promise((resolve) => {
+    const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['season', String(tmdbId), String(seasonNumber)])
+    const proc = spawn(cmd, allArgs, {
+      windowsHide: true,
+      timeout: 30_000,
+      env: { ...process.env, TMDB_API_KEY: settings.tmdb_api_key },
+    })
+
+    let stdout = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.on('close', () => {
+      try {
+        const data = JSON.parse(stdout)
+        resolve({ success: true, data })
+      } catch {
+        resolve({ success: false, error: 'Failed to parse TMDB response' })
+      }
+    })
+    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+  })
+})
+
+ipcMain.handle('tmdb-search', async (_e, query: string) => {
+  const settings = getSettings()
+  if (!settings.tmdb_api_key) {
+    return { success: false, error: 'TMDB API key not configured' }
+  }
+
+  return new Promise((resolve) => {
+    const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['search', query])
+    const proc = spawn(cmd, allArgs, {
+      windowsHide: true,
+      timeout: 30_000,
+      env: { ...process.env, TMDB_API_KEY: settings.tmdb_api_key },
+    })
+
+    let stdout = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.on('close', () => {
+      try {
+        const data = JSON.parse(stdout)
+        resolve({ success: true, data })
+      } catch {
+        resolve({ success: false, error: 'Failed to parse TMDB response' })
+      }
+    })
+    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+  })
+})
+
+ipcMain.handle('tmdb-load-more', async (_e, mediaType: string, kind: string, page: number) => {
+  const settings = getSettings()
+  if (!settings.tmdb_api_key) {
+    return { success: false, error: 'TMDB API key not configured' }
+  }
+
+  return new Promise((resolve) => {
+    const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['load_more', mediaType, kind, String(page)])
+    const proc = spawn(cmd, allArgs, {
+      windowsHide: true,
+      timeout: 30_000,
+      env: { ...process.env, TMDB_API_KEY: settings.tmdb_api_key },
+    })
+
+    let stdout = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    proc.on('close', () => {
+      try {
+        const data = JSON.parse(stdout)
+        resolve({ success: true, data })
+      } catch {
+        resolve({ success: false, error: 'Failed to parse TMDB response' })
+      }
+    })
+    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+  })
+})
+
+ipcMain.handle('tmdb-validate', async (_e, apiKey: string) => {
+  return new Promise((resolve) => {
+    const https = require('https')
+    const url = `https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(apiKey)}`
+    https.get(url, { headers: { 'User-Agent': 'TorDownloader-PRO/1.0' } }, (res: any) => {
+      let body = ''
+      res.on('data', (chunk: string) => { body += chunk })
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body)
+          if (data.images) {
+            updateSettings({ tmdb_api_key: apiKey })
+            resolve({ success: true })
+          } else if (data.status_code === 7) {
+            resolve({ success: false, error: 'Invalid API key' })
+          } else {
+            resolve({ success: false, error: data.status_message || 'Validation failed' })
+          }
+        } catch {
+          resolve({ success: false, error: 'Failed to validate' })
+        }
+      })
+    }).on('error', (err: Error) => resolve({ success: false, error: err.message }))
+    setTimeout(() => resolve({ success: false, error: 'Validation timed out' }), 10000)
+  })
+})
+
+ipcMain.handle('latino-search', async (e, imdbId: string, mediaType: string, season?: string, episode?: string) => {
+  const sender = e.sender
+  const args = ['--stream', imdbId, mediaType]
+  if (season) args.push(season)
+  if (episode) args.push(episode)
+
+  return new Promise<void>((resolve) => {
+    const { cmd, allArgs } = spawnPython('latino-providers.py', args)
+    const proc = spawn(cmd, allArgs, {
+      windowsHide: true,
+      timeout: 45_000,
+      env: { ...process.env },
+    })
+
+    let buffer = ''
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM')
+      resolve()
+    }, 45_000)
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf-8')
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const progress = JSON.parse(trimmed)
+          if (!sender.isDestroyed()) {
+            sender.send('latino-search-progress', progress)
+          }
+        } catch { /* skip */ }
+      }
+    })
+
+    proc.on('close', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+
+    proc.on('error', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+})
+
+// ── Stremio Catalog Addon ──────────────────────
+
+const CATALOG_BASE = 'https://btttr.cc/pVjfb-M2DP5XBD9sDwsBu-l1Sd6a9O464HotkvSKwzAMjM0kWmXJk-TkckX_90GOHdtRfrTYm0N9H8mQFEnoJYjRolALEwz-DARaMhbSoFN9mqATWJXgphBuv2oZBp0gVimXi-K4_DT1pwNYTTKpILsfDpSpLBeoi4Pqe6s8K6D4bCHLZ4N_cmO5BOBpMgOrMtBoKYFUrTiZFjJR8scGIEW9IgExl5Si5THkkq9IG3qLWrsCs1TrtuIZyblG-SwcYVYEictknsfPbVyMmUUuJWYoUoAoDCNYaCrjWjgMag4oBFietv0xWWR5ySmhG5VDmrs8EMGM5kpTIUt4myq4WV6GPdh51Tr9G8kFAraetHTjBpa4IpC0Ig1LQp2Amh_WbXVOEGueEiQqzlOSFvUGDGmnbs5F2uJZskvUXEmA5EgGjJI8XqPWXGkAY1HDGrWBGKWSRYAEl3QiEWgoASUBt84Zq_RmLx8yVnLOdQpglrmFPAOUCazRxssWUlOickSUBKCVEEWRWiUJjEtJncWqPk7kkYToqlwmVcR3xe3V1ZwnrlBnAHhx2TpZcIHJAsDkM01Jwl0NCIotV7Ktwi5dXTwDYIwJpRvANerEbKs047HNNcGaS0naHKz_UlL6eLD8XckYi1kGsFRaKx10gjSZCe5M5LPBRdS_3BdddK_2RN2wd-GJ-l0fdYDY80V9X1foi_b96ob9D77IsxiFv3uiKNoXda889VHkO9HzdYUHLHr_MQr3Xb24inrBX50gJYvB4OXNTXLwEkhMKRgEf9zdDAdsqjI2dgB2t-uiwSCYBa_vaqe12rvr8bePX9iowrDHxoX3NZ_rvcf9nX5jk6o-fb2n-nStc0jGsrtmA_c1vbeT19odlH0uoWV8mZqzayHYtGwWvr13dv89c6WV7ypnd7mxbELEhgWjkN3wI1b9wdFIaWOW-Mz3D5VacxGcls-4Ybe4IvbVUdito7D7-Rmf3zCQaptTnRMbOTC7qcFsUoDZL-xTOb98e0cGWa36ZnSm2t8452qNE4uaPaE2bOQgrDkKzxX9wZnYqH13zpRkyKbjx49sMr0ffz92BU4Nz4a3y9yyx6zDrmXCnqrJ6uv7fyO2tjfectnEcX81LArD-r5V_eEtN-70nN6v14ft6an20x7ntYLr7XD3CSenfCPC1TGbtJaAA8X6nm2g4eAWza4LNANWtMiHLZ491dvD8VZ-ZI1o3kB8toNdGE83cn_jqBXdVivIjuftIjX4S7ssSpbxWG5dafiqskbntktia6KqE6b75GKxqclfyc4F_3HaYLH5-JzWOD5kqOnl7fD-nJFer5nlFH8qyR6KLniO2G8aykV-9u-EzZbIjaTNb2c5l8e8OxeH_ocD1s6Srvb_0xmG2wJrxkillGyOg6OoWUFLzYUgfRTudsfGDY85fOIndIfHLsChIml6PRyOzqTBLaPNVuDay4mQNCtq5JJ1AtvKksa0eBA4hC0W20P3rya8ulcCY6loBe6NYBBgbpV7PNBqocmYYOBGXvnKMEX3qLEV_Juj4HazFc1RGOoErj19JqmpAjnBGC2Xi0qCC6oEFUlp543SfMEliuD19T8'
+
+function catalogFetch(path: string): Promise<any> {
+  return new Promise((resolve) => {
+    const https = require('https')
+    https.get(`${CATALOG_BASE}${path}`, { headers: { 'User-Agent': 'TorDownloader-PRO/1.0' } }, (res: any) => {
+      let body = ''
+      res.on('data', (chunk: string) => { body += chunk })
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)) }
+        catch { resolve(null) }
+      })
+    }).on('error', () => resolve(null))
+    setTimeout(() => resolve(null), 15000)
+  })
+}
+
+let _catalogManifest: any = null
+
+ipcMain.handle('catalog-manifest', async () => {
+  if (_catalogManifest) return { success: true, data: _catalogManifest }
+  const manifest = await catalogFetch('/manifest.json')
+  if (manifest) {
+    _catalogManifest = manifest.catalogs || []
+    return { success: true, data: _catalogManifest }
+  }
+  return { success: false, error: 'Failed to fetch catalog manifest' }
+})
+
+ipcMain.handle('catalog-items', async (_e, type: string, id: string) => {
+  const data = await catalogFetch(`/catalog/${type}/${id}.json`)
+  if (data && data.metas) {
+    return { success: true, data: data.metas }
+  }
+  return { success: false, error: 'Failed to fetch catalog items' }
+})
+
+ipcMain.handle('catalog-meta', async (_e, type: string, imdbId: string) => {
+  const data = await catalogFetch(`/meta/${type}/${imdbId}.json`)
+  if (data && data.meta) {
+    return { success: true, data: data.meta }
+  }
+  return { success: false, error: 'Failed to fetch meta' }
 })

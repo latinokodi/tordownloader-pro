@@ -9,7 +9,8 @@ import { useWebSocket } from './hooks/useWebSocket'
 import { api } from './hooks/useApi'
 import { useT, useTranslateError } from './i18n'
 import { LangToggle } from './i18n/LangToggle'
-import { Settings, DownloadCloud, Search, Magnet, ScrollText, FolderOpen } from 'lucide-react'
+import { Settings, DownloadCloud, Search, Magnet, ScrollText, FolderOpen, Compass } from 'lucide-react'
+import { DiscoverView } from './components/DiscoverView'
 
 function App() {
   const t = useT()
@@ -268,6 +269,12 @@ function App() {
           >
             <div className="flex items-center gap-2"><ScrollText size={16}/> {t.nav.logs}</div>
           </button>
+          <button
+            className={`w-full text-left px-4 py-3 font-mono text-sm tracking-wide uppercase transition-colors ${activeNav === 'discover' ? 'bg-accent/10 text-accent border-l-2 border-accent' : 'text-text-muted hover:text-text-main'}`}
+            onClick={() => setActiveNav('discover')}
+          >
+            <div className="flex items-center gap-2"><Compass size={16}/> Discover</div>
+          </button>
         </nav>
 
         <div className="p-4 border-t border-border space-y-2">
@@ -415,6 +422,20 @@ function App() {
             <div className="h-full flex flex-col space-y-6 animate-fade-in">
               <div className="glass-panel flex-1 overflow-auto p-4">
                 <LogPanel />
+              </div>
+            </div>
+          )}
+
+          {activeNav === 'discover' && (
+            <div className="h-full flex flex-col space-y-6 animate-fade-in">
+              <div className="glass-panel flex-1 overflow-auto p-4">
+                <DiscoverView
+                  onDownloadAdded={refreshDownloads}
+                  showToast={showToast}
+                  service={downloadService}
+                  hasTorbox={hasTorbox}
+                  hasRealdebrid={hasRealdebrid}
+                />
               </div>
             </div>
           )}
