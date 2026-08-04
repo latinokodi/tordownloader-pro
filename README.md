@@ -13,24 +13,24 @@
 
 ---
 
-## Caracteristicas
+## Características
 
-- **Metabusqueda integrada** — 17 motores de busqueda funcionando simultaneamente. Sin Docker, sin Jackett, sin configuracion.
-- **TorBox + Real-Debrid** — Soporte para ambos servicios debrid. Autenticacion OAuth. Seleccion de archivos RD.
-- **Discover** — Catalogo TMDB con exploracion de peliculas y series. Busqueda automatica en proveedores latinos.
-- **Actualizaciones automaticas** — La app se actualiza sola desde GitHub Releases. Notificacion, descarga y reinicio sin reinstalar.
+- **Metabúsqueda integrada** — 17 motores de búsqueda funcionando simultáneamente. Sin Docker, sin Jackett, sin configuración.
+- **TorBox + Real-Debrid** — Soporte para ambos servicios débrid. Autenticación OAuth. Selección de archivos RD.
+- **Discover** — Catálogo TMDB con exploración de películas y series. Búsqueda automática en proveedores latinos.
+- **Actualizaciones automáticas** — La app se actualiza sola desde GitHub Releases. Notificación, descarga y reinicio sin reinstalar.
 - **Descargas locales** — Monitoreo en tiempo real del progreso, velocidad y ETA. Descargas directas a tu PC.
-- **FlareSolverr integrado** — Se descarga e instala automaticamente. Reinicio manual desde la barra lateral si se atasca.
-- **Modo oscuro profesional** — Interfaz disenada para uso intensivo, tipografia monoespaciada y esquema de color oscuro.
-- **Internacionalizacion** — Espanol latinoamericano e ingles. Cambio instantaneo desde la barra lateral.
+- **FlareSolverr integrado** — Se descarga e instala automáticamente. Reinicio manual desde la barra lateral si se atasca.
+- **Modo oscuro profesional** — Interfaz diseñada para uso intensivo, tipografía monoespaciada y esquema de color oscuro.
+- **Internacionalización** — Español latinoamericano e inglés. Cambio instantáneo desde la barra lateral.
 
 ---
 
-## Instalacion
+## Instalación
 
 1. Descarga el instalador desde [Releases](https://github.com/latinokodi/tordownloader-pro/releases)
 2. Ejecuta `TorDownloader-PRO-Setup-x.x.x.exe`
-3. En Configuracion, vincula tu cuenta TorBox o Real-Debrid
+3. En Configuración, vincula tu cuenta TorBox o Real-Debrid
 4. Para Discover, ingresa tu TMDB API Key (gratis en themoviedb.org)
 
 **Requisitos:** Windows 10 o superior (x64). No requiere Python, Java, Docker ni dependencias externas.
@@ -39,33 +39,33 @@
 
 ## Uso
 
-### Busqueda
-Escribe y presiona Enter. Resultados de 17 motores con titulo, tamano, seeders, indexer y enlace.
+### Búsqueda
+Escribe y presiona Enter. Resultados de 17 motores con título, tamaño, seeders, indexer y enlace.
 
 ### Discover
-Explora el catalogo TMDB, selecciona una pelicula o serie, elige temporada y episodio. La app busca automaticamente en proveedores de contenido latino.
+Explora el catálogo TMDB, selecciona una película o serie, elige temporada y episodio. La app busca automáticamente en proveedores de contenido latino.
 
 ### Descargas
 Las descargas muestran progreso en tiempo real: estado en la nube (TorBox/RD) y descarga local con velocidad y ETA.
 
-### Configuracion
-- Vincular TorBox o Real-Debrid via OAuth
+### Configuración
+- Vincular TorBox o Real-Debrid vía OAuth
 - Carpeta de destino
 - TMDB API Key para Discover
 - Auto-eliminar completados
 - Buscar actualizaciones de la app
-- Probar motores de busqueda
+- Probar motores de búsqueda
 - Idioma (ES / EN)
 
 ---
 
-## Tecnologia
+## Tecnología
 
-| Componente | Tecnologia |
+| Componente | Tecnología |
 |---|---|
 | Frontend | React 18 + TypeScript + Tailwind CSS |
 | Backend | Electron + Node.js |
-| Metabusqueda | Python (PyInstaller .exe) + qBittorrent plugins |
+| Metabúsqueda | Python (PyInstaller .exe) + qBittorrent plugins |
 | Base de datos | SQLite (better-sqlite3) |
 | Bypass CF | FlareSolverr (auto-descargable) |
 | Actualizaciones | electron-updater + GitHub Releases |
@@ -90,7 +90,7 @@ npm run dist      # generar instalador
 
 ## Descargo de responsabilidad
 
-**TorDownloader PRO es una herramienta de busqueda y gestion de descargas.** No aloja, almacena ni distribuye contenido protegido por derechos de autor. Los resultados provienen de motores publicos de terceros. El usuario es responsable del cumplimiento de las leyes de su jurisdiccion.
+**TorDownloader PRO es una herramienta de búsqueda y gestión de descargas.** No aloja, almacena ni distribuye contenido protegido por derechos de autor. Los resultados provienen de motores públicos de terceros. El usuario es responsable del cumplimiento de las leyes de su jurisdicción.
 
 ---
 
