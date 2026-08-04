@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import path from 'path'
 import { spawn } from 'child_process'
+import fs from 'fs'
 import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, Settings } from './db'
 import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
 import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr, restartFlareSolverr, getFlareSolverrStatus } from './flaresolverr'
@@ -592,6 +593,13 @@ function getRunnerPath(scriptName: string): string {
 function spawnPython(scriptName: string, args: string[]): { cmd: string; allArgs: string[] } {
   const scriptPath = getRunnerPath(scriptName)
   if (scriptPath.endsWith('.py')) {
+    // In production, prefer the bundled .exe over system Python
+    if (!process.env.VITE_DEV_SERVER_URL) {
+      const exePath = scriptPath.replace(/\.py$/, '.exe')
+      if (fs.existsSync(exePath)) {
+        return { cmd: exePath, allArgs: args }
+      }
+    }
     return { cmd: 'python', allArgs: [scriptPath, ...args] }
   }
   return { cmd: scriptPath, allArgs: args }

@@ -26,11 +26,16 @@ jobs:
       - name: Install Python deps
         run: pip install pyinstaller cloudscraper
 
-      - name: Build qbit-runner.exe
+      - name: Build Python executables
         run: |
           cd electron/qbit-plugins
           pyinstaller --onefile --name qbit-runner --distpath . --add-data "engines:engines" --add-data "novaprinter.py:." --add-data "helpers.py:." --hidden-import cloudscraper --clean qbit-runner.py
           rm -rf build qbit-runner.spec
+          cd ..
+          pyinstaller --onefile --name tmdb-provider --distpath . --clean tmdb-provider.py
+          rm -rf build tmdb-provider.spec
+          pyinstaller --onefile --name latino-providers --distpath . --clean latino-providers.py
+          rm -rf build latino-providers.spec
         shell: bash
 
       - name: Install npm deps
@@ -47,7 +52,6 @@ jobs:
           path: release/TorDownloader-PRO-Setup-*.exe
 
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           draft: false
