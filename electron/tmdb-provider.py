@@ -7,6 +7,7 @@ Usage:
   python tmdb-provider.py lists                  → trending/popular/topRated
   python tmdb-provider.py detail <id> <type>     → movie or series detail
   python tmdb-provider.py season <id> <season>   → episode list
+  python tmdb-provider.py search <query>         → multi search
 
 All output is JSON to stdout. TMDB API key from TMDB_API_KEY env var.
 """
@@ -103,29 +104,6 @@ def cmd_lists():
     return result
 
 
-def cmd_load_more(media_type, kind, page):
-    page = int(page)
-
-    if kind == 'trending':
-        return {'results': [], 'page': page, 'total_pages': 1}
-
-    if media_type == 'movie':
-        if kind == 'popular':
-            data = tmdb_get('/movie/popular', {'page': page})
-        else:
-            data = tmdb_get('/movie/top_rated', {'page': page})
-    else:
-        if kind == 'popular':
-            data = tmdb_get('/tv/popular', {'page': page})
-        else:
-            data = tmdb_get('/tv/top_rated', {'page': page})
-
-    items = data.get('results', [])
-    result = [format_item(item, media_type) for item in items]
-    total_pages = data.get('total_pages', 1)
-    return {'results': result, 'page': page, 'total_pages': min(total_pages, 25)}
-
-
 def cmd_detail(tmdb_id, media_type):
     if media_type == 'movie':
         data = tmdb_get(f'/movie/{tmdb_id}')
@@ -200,8 +178,6 @@ def main():
             result = cmd_season(args[1], args[2])
         elif cmd == 'search' and len(args) >= 2:
             result = cmd_search(args[1])
-        elif cmd == 'load_more' and len(args) >= 4:
-            result = cmd_load_more(args[1], args[2], args[3])
         else:
             print(json.dumps({'error': f'Unknown command: {cmd}'}))
             sys.exit(1)

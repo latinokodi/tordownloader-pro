@@ -61,8 +61,6 @@ const api = {
   tmdbDetail: (tmdbId: number, mediaType: string): Promise<any> => ipcRenderer.invoke('tmdb-detail', tmdbId, mediaType),
   tmdbSeason: (tmdbId: number, seasonNumber: number): Promise<any> => ipcRenderer.invoke('tmdb-season', tmdbId, seasonNumber),
   tmdbSearch: (query: string): Promise<any> => ipcRenderer.invoke('tmdb-search', query),
-  tmdbLoadMore: (mediaType: string, kind: string, page: number): Promise<any> =>
-    ipcRenderer.invoke('tmdb-load-more', mediaType, kind, page),
   tmdbValidate: (apiKey: string): Promise<any> => ipcRenderer.invoke('tmdb-validate', apiKey),
   latinoSearch: (imdbId: string, mediaType: string, season?: string, episode?: string): Promise<any> =>
     ipcRenderer.invoke('latino-search', imdbId, mediaType, season, episode),

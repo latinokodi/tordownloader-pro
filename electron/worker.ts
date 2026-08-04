@@ -68,7 +68,8 @@ function safeMkdirSync(dirPath: string) {
 }
 
 export function startWorker(mainWindow: BrowserWindow | null) {
-  if (workerInterval) clearInterval(workerInterval);
+  if (workerInterval) clearInterval(workerInterval)
+  console.log('[Worker] Starting background worker (10s interval)')
 
   // ── Resume interrupted downloads on startup ──────────
   try {
@@ -142,6 +143,7 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
 
       if (completedStates.includes(state.toLowerCase()) && ['pending', 'queued'].includes(record.local_status)) {
         if (!activeLocalDownloads.has(tid)) {
+          console.log(`[Worker] Queued TorBox download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
           runTorboxDownload(tid, dlData, settings.destination_folder, settings.torbox_token, mainWindow).catch(err => {
@@ -233,6 +235,7 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
 
       if (completedStates.includes(effectiveState) && ['pending', 'queued'].includes(record.local_status)) {
         if (!activeLocalDownloads.has(tid)) {
+          console.log(`[Worker] Queued RD download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
           runRealdebridDownload(tid, dlData, settings.destination_folder, settings.realdebrid_token, mainWindow).catch(err => {
@@ -366,6 +369,7 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
       local_speed: 0,
       local_path: destFolder,
     });
+    console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
     
   } catch (err: any) {
     updateDownload(tid, {
@@ -494,6 +498,7 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
       local_speed: 0,
       local_path: destFolder,
     });
+    console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
 
   } catch (err: any) {
     updateDownload(tid, {

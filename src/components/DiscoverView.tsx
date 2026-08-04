@@ -18,9 +18,6 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<TMDBItem[] | null>(null)
   const [searching, setSearching] = useState(false)
-  const [page, setPage] = useState(1)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(true)
   // Catalog state
   const [catalogs, setCatalogs] = useState<any[] | null>(null)
   const [selectedCatalog, setSelectedCatalog] = useState<string | null>(null)
@@ -285,43 +282,6 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
     }
   }
 
-  // Reset pagination when switching list type or media tab
-  useEffect(() => {
-    setPage(1)
-    setHasMore(true)
-  }, [listType, mediaTab])
-
-  const handleLoadMore = async () => {
-    const electronAPI = (window as any).electronAPI
-    if (!electronAPI || loadingMore || !hasMore) return
-
-    setLoadingMore(true)
-    const nextPage = page + 1
-    try {
-      const res = await electronAPI.tmdbLoadMore(mediaTab === 'movies' ? 'movie' : 'tv', listType, nextPage)
-      if (res.success && res.data) {
-        const newItems = res.data.results || []
-        if (newItems.length === 0 || res.data.page >= (res.data.total_pages || 1)) {
-          setHasMore(false)
-        }
-        if (newItems.length > 0) {
-          const existing = lists?.[mediaTab]?.[listType] || []
-          setLists({
-            ...lists!,
-            [mediaTab]: {
-              ...lists![mediaTab],
-              [listType]: [...existing, ...newItems],
-            },
-          })
-          setPage(nextPage)
-        }
-      }
-    } catch (_) {}
-    finally {
-      setLoadingMore(false)
-    }
-  }
-
   const handleTMDSearch = async (e: React.FormEvent) => {
     e.preventDefault()
     const q = searchQuery.trim()
@@ -538,20 +498,7 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
 
       {/* Thumbnail grid */}
       {currentItems.length > 0 ? (
-        <>
-          <DiscoverThumbnails items={currentItems} onClick={handleItemClick} />
-          {!searchResults && hasMore && listType !== 'trending' && (
-            <div className="flex justify-center pt-4">
-              <button
-                className="btn border border-border hover:border-accent font-mono text-xs w-full"
-                onClick={handleLoadMore}
-                disabled={loadingMore}
-              >
-                {loadingMore ? 'Cargando...' : 'Cargar más'}
-              </button>
-            </div>
-          )}
-        </>
+        <DiscoverThumbnails items={currentItems} onClick={handleItemClick} />
       ) : (
         <div className="flex items-center justify-center text-text-muted text-sm py-12">
           Sin resultados

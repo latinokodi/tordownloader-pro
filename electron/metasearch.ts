@@ -137,6 +137,8 @@ export class MetaSearch {
       await this.initialize()
     }
 
+    console.log(`[MetaSearch] Starting batch search: "${query}"`)
+
     return new Promise<MetaResult[]>((resolve) => {
       let stdout = ''
       let stderr = ''
