@@ -34,6 +34,7 @@ function App() {
   const [updateDownloaded, setUpdateDownloaded] = useState(false)
   const [updatePercent, setUpdatePercent] = useState(0)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  const [appVersion, setAppVersion] = useState('')
 
   const { addTab, setTabResult, setTabError, appendResults, setCurrentEngine, markSearchDone } = useSearchTabsStore()
 
@@ -97,6 +98,12 @@ function App() {
     if ((window as any).electronAPI?.flaresolverrStatus) {
       (window as any).electronAPI.flaresolverrStatus().then((res: any) => {
         if (res?.status) setFlareSolverrStatus(res.status)
+      }).catch(() => {})
+    }
+    // Get app version
+    if ((window as any).electronAPI?.getVersion) {
+      (window as any).electronAPI.getVersion().then((v: string) => {
+        if (v) setAppVersion(v)
       }).catch(() => {})
     }
 
@@ -296,6 +303,7 @@ function App() {
             />
           </div>
           <span className="font-bold uppercase tracking-wider text-sm">TorDownloader</span>
+          {appVersion && <span className="text-[10px] text-text-muted font-mono">v{appVersion}</span>}
         </div>
         
         <nav className="flex-1 p-4 space-y-2">

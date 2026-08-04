@@ -558,6 +558,10 @@ ipcMain.handle('get-logs', () => {
   return [...logBuffer]
 })
 
+ipcMain.handle('get-app-version', () => {
+  return app.getVersion()
+})
+
 ipcMain.handle('open-folder', async (_e, folderPath: string) => {
   const result = await shell.openPath(folderPath)
   return { success: !result, error: result || null }
