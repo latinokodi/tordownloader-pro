@@ -115,6 +115,11 @@ const en = {
     pluginsCheckFailed: 'Failed to check for updates',
     checkingPlugins: 'CHECKING...',
     updatePlugins: 'UPDATE SEARCH PLUGINS',
+    updateTitle: 'App Updates',
+    checkForUpdates: 'CHECK FOR UPDATES',
+    updateChecking: 'Checking...',
+    updateUpToDate: 'Up to date',
+    updateCheckFailed: 'Check failed',
   },
   toasts: {
     magnetAdded: 'Magnet added to TorBox!',
@@ -129,6 +134,17 @@ const en = {
     noDestFolder: 'No destination folder configured. Set one in Settings.',
     failedOpenFolder: 'Failed to open folder',
     searchFailed: 'Search failed',
+  },
+  update: {
+    available: 'A new version is available!',
+    currentVersion: 'You are on',
+    download: 'Download',
+    notNow: 'Not now',
+    downloading: 'Downloading update...',
+    restartNow: 'Restart Now',
+    later: 'Later',
+    ready: 'Update ready! Restart to install.',
+    error: 'Update error',
   },
 }
 

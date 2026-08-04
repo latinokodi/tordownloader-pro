@@ -240,6 +240,16 @@ export function isFlareSolverrReady(): boolean {
   return _healthy
 }
 
+export function getFlareSolverrStatus(): 'ready' | 'starting' | 'failed' | 'off' {
+  if (_healthy) return 'ready'
+  if (_proc) return 'starting'  // process running but not yet healthy
+  if (_restartCount > MAX_RESTART_COUNT) return 'failed'
+  // Check if the exe exists — if not, it was never installed
+  const exePath = getFlareSolverrExe()
+  if (!fs.existsSync(exePath)) return 'off'
+  return 'starting'  // exe exists but not running — will auto-restart
+}
+
 export function stopFlareSolverr(): void {
   if (_proc) {
     console.log('[FlareSolverr] Stopping...')
@@ -247,4 +257,39 @@ export function stopFlareSolverr(): void {
     _proc = null
     _healthy = false
   }
+}
+
+export async function restartFlareSolverr(): Promise<boolean> {
+  console.log('[FlareSolverr] Manual restart requested')
+
+  // Kill current process
+  if (_proc) {
+    _proc.kill('SIGTERM')
+    _proc = null
+  }
+  _healthy = false
+  _restartCount = 0  // reset — manual restart is intentional
+
+  try {
+    await ensureFlareSolverr()
+  } catch (err: any) {
+    console.error('[FlareSolverr] Cannot install:', err.message)
+    return false
+  }
+
+  startProcess()
+  if (!_proc) {
+    console.error('[FlareSolverr] Process failed to start')
+    return false
+  }
+
+  const ready = await waitForReady(STARTUP_TIMEOUT)
+  if (ready) {
+    _healthy = true
+    console.log('[FlareSolverr] Restarted successfully on port', FLARESOLVERR_PORT)
+    return true
+  }
+
+  console.warn('[FlareSolverr] Restart timed out')
+  return false
 }

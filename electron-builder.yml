@@ -2,6 +2,11 @@ appId: com.tordownloader.pro
 productName: TorDownloader PRO
 copyright: Copyright © 2025
 
+publish:
+  provider: github
+  owner: latinokodi
+  repo: tordownloader-pro
+
 directories:
   output: release
   buildResources: build
@@ -19,6 +24,10 @@ extraResources:
       - "engines/**"
       - "novaprinter.py"
       - "helpers.py"
+  - from: electron/latino-providers.py
+    to: latino-providers.py
+  - from: electron/tmdb-provider.py
+    to: tmdb-provider.py
 
 win:
   target:

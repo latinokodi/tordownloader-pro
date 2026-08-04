@@ -43,6 +43,8 @@ const api = {
     ipcRenderer.on('flaresolverr-ready', callback)
     return () => ipcRenderer.removeAllListeners('flaresolverr-ready')
   },
+  flaresolverrRestart: (): Promise<any> => ipcRenderer.invoke('flaresolverr-restart'),
+  flaresolverrStatus: (): Promise<{ status: string }> => ipcRenderer.invoke('flaresolverr-status'),
   onSearchProgress: (callback: (progress: any) => void) => {
     ipcRenderer.on('search-progress', (_e, progress) => callback(progress))
     return () => ipcRenderer.removeAllListeners('search-progress')
@@ -73,6 +75,32 @@ const api = {
   catalogManifest: (): Promise<any> => ipcRenderer.invoke('catalog-manifest'),
   catalogItems: (type: string, id: string): Promise<any> => ipcRenderer.invoke('catalog-items', type, id),
   catalogMeta: (type: string, imdbId: string): Promise<any> => ipcRenderer.invoke('catalog-meta', type, imdbId),
+
+  // ── Auto-update ──
+  checkForUpdates: (): Promise<any> => ipcRenderer.invoke('check-for-updates'),
+  downloadUpdate: (): Promise<any> => ipcRenderer.invoke('download-update'),
+  installUpdate: (): Promise<any> => ipcRenderer.invoke('install-update'),
+  dismissUpdate: (): Promise<any> => ipcRenderer.invoke('dismiss-update'),
+  onUpdateAvailable: (callback: (version: string) => void) => {
+    ipcRenderer.on('update-available', (_e, version) => callback(version))
+    return () => ipcRenderer.removeAllListeners('update-available')
+  },
+  onUpdateNotAvailable: (callback: () => void) => {
+    ipcRenderer.on('update-not-available', callback)
+    return () => ipcRenderer.removeAllListeners('update-not-available')
+  },
+  onUpdateDownloadProgress: (callback: (percent: number) => void) => {
+    ipcRenderer.on('update-download-progress', (_e, percent) => callback(percent))
+    return () => ipcRenderer.removeAllListeners('update-download-progress')
+  },
+  onUpdateDownloaded: (callback: () => void) => {
+    ipcRenderer.on('update-downloaded', callback)
+    return () => ipcRenderer.removeAllListeners('update-downloaded')
+  },
+  onUpdateError: (callback: (message: string) => void) => {
+    ipcRenderer.on('update-error', (_e, message) => callback(message))
+    return () => ipcRenderer.removeAllListeners('update-error')
+  },
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

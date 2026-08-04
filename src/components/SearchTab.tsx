@@ -98,12 +98,16 @@ export function SearchTab({ onDownloadAdded, showToast, service, serviceAvailabl
   }
 
   if (tab.error) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-danger font-mono uppercase tracking-widest gap-4 min-h-[300px]">
-        <span className="text-4xl">⚠️</span>
-        <p>{tab.error}</p>
-      </div>
-    )
+    // If we have results, show a warning banner instead of replacing everything
+    const hasResults = tab.results && tab.results.length > 0
+    if (!hasResults) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-danger font-mono uppercase tracking-widest gap-4 min-h-[300px]">
+          <span className="text-4xl">⚠️</span>
+          <p>{tab.error}</p>
+        </div>
+      )
+    }
   }
 
   // Search bar shown during loading and when we have results but search is still ongoing
@@ -146,6 +150,11 @@ export function SearchTab({ onDownloadAdded, showToast, service, serviceAvailabl
   return (
     <div className="flex flex-col gap-3">
       {searchBar}
+      {tab.error && (
+        <div className="px-4 py-2 bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 font-mono text-xs uppercase tracking-wider">
+          ⚠ {tab.error} — showing partial results
+        </div>
+      )}
       {tab.results!.map((r: SearchResult, i: number) => (
         <div key={i} className="glass-panel p-4 flex justify-between items-center transition-colors hover:border-accent">
           <div className="flex-1 overflow-hidden pr-4">

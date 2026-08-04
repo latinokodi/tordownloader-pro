@@ -3,12 +3,13 @@ import path from 'path'
 import { spawn } from 'child_process'
 import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, Settings } from './db'
 import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
-import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr } from './flaresolverr'
+import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr, restartFlareSolverr, getFlareSolverrStatus } from './flaresolverr'
 import { startCFServer, getCFServerPort, stopCFServer } from './cf-fetcher'
 import { checkPluginsForUpdates, updatePlugins } from './plugin-updater'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { startWorker, cancelLocalDownload } from './worker'
+import { initAutoUpdater, checkForUpdates, checkForUpdatesManual, downloadUpdate, installUpdate, dismissUpdate } from './updater'
 
 // ── Single instance lock ──────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
@@ -46,6 +47,24 @@ const _origError = console.error
 console.log = (...args: any[]) => { _origLog(...args); sendLog('info', ...args) }
 console.warn = (...args: any[]) => { _origWarn(...args); sendLog('warn', ...args) }
 console.error = (...args: any[]) => { _origError(...args); sendLog('error', ...args) }
+
+// ── Global error handlers ───────────────────────────
+process.on('uncaughtException', (err) => {
+  _origError.call(console, '[FATAL] Uncaught exception:', err)
+  sendLog('error', '[FATAL] Uncaught exception:', err.message || err)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app-log', { ts: new Date().toISOString().slice(11, 19), text: `Fatal error: ${err.message}`, level: 'error' })
+  }
+})
+
+process.on('unhandledRejection', (reason: any) => {
+  const msg = reason?.message || String(reason)
+  _origError.call(console, '[FATAL] Unhandled rejection:', reason)
+  sendLog('error', '[FATAL] Unhandled rejection:', msg)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app-log', { ts: new Date().toISOString().slice(11, 19), text: `Unhandled rejection: ${msg}`, level: 'error' })
+  }
+})
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -87,6 +106,11 @@ app.whenReady().then(async () => {
   }
   initMetaSearch()  // starts Python runner dependency check
   createWindow()
+
+  // Init auto-updater after window exists for IPC
+  initAutoUpdater(mainWindow!)
+  // Defer update check — let the window render first so IPC listeners are registered
+  setTimeout(() => checkForUpdates(), 3000)
 
   // Start local HTTP bridge for Python plugins to fetch CF-protected pages
   // through Electron's native Chromium (handles Cloudflare natively)
@@ -834,4 +858,34 @@ ipcMain.handle('catalog-meta', async (_e, type: string, imdbId: string) => {
     return { success: true, data: data.meta }
   }
   return { success: false, error: 'Failed to fetch meta' }
+})
+
+// ── Auto-update ──
+ipcMain.handle('check-for-updates', () => {
+  checkForUpdatesManual()
+  return { success: true }
+})
+ipcMain.handle('download-update', () => {
+  downloadUpdate()
+  return { success: true }
+})
+ipcMain.handle('install-update', () => {
+  installUpdate()
+  return { success: true }
+})
+ipcMain.handle('dismiss-update', () => {
+  dismissUpdate()
+  return { success: true }
+})
+
+// ── FlareSolverr ──
+ipcMain.handle('flaresolverr-restart', async () => {
+  const ok = await restartFlareSolverr()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('flaresolverr-ready')
+  }
+  return { success: ok }
+})
+ipcMain.handle('flaresolverr-status', () => {
+  return { status: getFlareSolverrStatus() }
 })
