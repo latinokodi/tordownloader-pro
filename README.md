@@ -7,7 +7,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/plataforma-Windows%20x64-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/versi%C3%B3n-1.0.14-darkgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/versi%C3%B3n-1.0.15-darkgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/licencia-MIT-yellow?style=flat-square" />
 </p>
 
