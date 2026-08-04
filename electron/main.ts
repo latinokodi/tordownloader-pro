@@ -605,6 +605,8 @@ ipcMain.handle('tmdb-lists', async () => {
 
   return new Promise((resolve) => {
     const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['lists'])
+    const label = 'tmdb-lists'
+    console.log(`[TMDB] ${label}: spawning ${cmd} ${allArgs.join(' ')}`)
     const proc = spawn(cmd, allArgs, {
       windowsHide: true,
       timeout: 30_000,
@@ -615,20 +617,29 @@ ipcMain.handle('tmdb-lists', async () => {
     let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
     proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
-    proc.on('close', () => {
+    proc.on('close', (code) => {
+      if (stderr) console.warn(`[TMDB] ${label} stderr (exit ${code}):`, stderr.slice(0, 500))
       try {
         const data = JSON.parse(stdout)
         if (data.error) {
+          console.error(`[TMDB] ${label} error:`, data.error)
           resolve({ success: false, error: data.error })
         } else {
+          const count = data.movies ? Object.values(data.movies).reduce((a: number, v: any) => a + v.length, 0) : 0
+          const tvCount = data.tv ? Object.values(data.tv).reduce((a: number, v: any) => a + v.length, 0) : 0
+          console.log(`[TMDB] ${label}: ${count} movies + ${tvCount} tv shows`)
           resolve({ success: true, data })
         }
       } catch {
-        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        const preview = stdout.slice(0, 500) || stderr.slice(0, 500) || '(empty)'
+        console.error(`[TMDB] ${label} parse FAILED. stdout:`, preview)
         resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
-    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+    proc.on('error', (err) => {
+      console.error(`[TMDB] ${label} spawn failed:`, err.message)
+      resolve({ success: false, error: err.message })
+    })
   })
 })
 
@@ -640,6 +651,8 @@ ipcMain.handle('tmdb-detail', async (_e, tmdbId: number, mediaType: string) => {
 
   return new Promise((resolve) => {
     const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['detail', String(tmdbId), mediaType])
+    const label = `tmdb-detail(${mediaType}/${tmdbId})`
+    console.log(`[TMDB] ${label}: spawning`)
     const proc = spawn(cmd, allArgs, {
       windowsHide: true,
       timeout: 30_000,
@@ -650,20 +663,27 @@ ipcMain.handle('tmdb-detail', async (_e, tmdbId: number, mediaType: string) => {
     let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
     proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
-    proc.on('close', () => {
+    proc.on('close', (code) => {
+      if (stderr) console.warn(`[TMDB] ${label} stderr (exit ${code}):`, stderr.slice(0, 500))
       try {
         const data = JSON.parse(stdout)
         if (data.error) {
+          console.error(`[TMDB] ${label} error:`, data.error)
           resolve({ success: false, error: data.error })
         } else {
+          console.log(`[TMDB] ${label}: OK (${data.title || '?'}, imdb=${data.imdb_id || '?'})`)
           resolve({ success: true, data })
         }
       } catch {
-        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        const preview = stdout.slice(0, 500) || stderr.slice(0, 500) || '(empty)'
+        console.error(`[TMDB] ${label} parse FAILED. stdout:`, preview)
         resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
-    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+    proc.on('error', (err) => {
+      console.error(`[TMDB] ${label} spawn failed:`, err.message)
+      resolve({ success: false, error: err.message })
+    })
   })
 })
 
@@ -675,6 +695,8 @@ ipcMain.handle('tmdb-season', async (_e, tmdbId: number, seasonNumber: number) =
 
   return new Promise((resolve) => {
     const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['season', String(tmdbId), String(seasonNumber)])
+    const label = `tmdb-season(${tmdbId}/S${seasonNumber})`
+    console.log(`[TMDB] ${label}: spawning`)
     const proc = spawn(cmd, allArgs, {
       windowsHide: true,
       timeout: 30_000,
@@ -685,20 +707,28 @@ ipcMain.handle('tmdb-season', async (_e, tmdbId: number, seasonNumber: number) =
     let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
     proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
-    proc.on('close', () => {
+    proc.on('close', (code) => {
+      if (stderr) console.warn(`[TMDB] ${label} stderr (exit ${code}):`, stderr.slice(0, 500))
       try {
         const data = JSON.parse(stdout)
         if (data.error) {
+          console.error(`[TMDB] ${label} error:`, data.error)
           resolve({ success: false, error: data.error })
         } else {
+          const epCount = data.episodes?.length || 0
+          console.log(`[TMDB] ${label}: ${epCount} episodes`)
           resolve({ success: true, data })
         }
       } catch {
-        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        const preview = stdout.slice(0, 500) || stderr.slice(0, 500) || '(empty)'
+        console.error(`[TMDB] ${label} parse FAILED. stdout:`, preview)
         resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
-    proc.on('error', (err) => resolve({ success: false, error: err.message }))
+    proc.on('error', (err) => {
+      console.error(`[TMDB] ${label} spawn failed:`, err.message)
+      resolve({ success: false, error: err.message })
+    })
   })
 })
 
@@ -710,6 +740,8 @@ ipcMain.handle('tmdb-search', async (_e, query: string) => {
 
   return new Promise((resolve) => {
     const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['search', query])
+    const label = `tmdb-search("${query}")`
+    console.log(`[TMDB] ${label}: spawning`)
     const proc = spawn(cmd, allArgs, {
       windowsHide: true,
       timeout: 30_000,
@@ -720,55 +752,27 @@ ipcMain.handle('tmdb-search', async (_e, query: string) => {
     let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
     proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
-    proc.on('close', () => {
+    proc.on('close', (code) => {
+      if (stderr) console.warn(`[TMDB] ${label} stderr (exit ${code}):`, stderr.slice(0, 500))
       try {
         const data = JSON.parse(stdout)
         if (data.error) {
+          console.error(`[TMDB] ${label} error:`, data.error)
           resolve({ success: false, error: data.error })
         } else {
+          console.log(`[TMDB] ${label}: ${Array.isArray(data) ? data.length : 0} results`)
           resolve({ success: true, data })
         }
       } catch {
-        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
+        const preview = stdout.slice(0, 500) || stderr.slice(0, 500) || '(empty)'
+        console.error(`[TMDB] ${label} parse FAILED. stdout:`, preview)
         resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
       }
     })
-    proc.on('error', (err) => resolve({ success: false, error: err.message }))
-  })
-})
-
-ipcMain.handle('tmdb-load-more', async (_e, mediaType: string, kind: string, page: number) => {
-  const settings = getSettings()
-  if (!settings.tmdb_api_key) {
-    return { success: false, error: 'TMDB API key not configured' }
-  }
-
-  return new Promise((resolve) => {
-    const { cmd, allArgs } = spawnPython('tmdb-provider.py', ['load_more', mediaType, kind, String(page)])
-    const proc = spawn(cmd, allArgs, {
-      windowsHide: true,
-      timeout: 30_000,
-      env: { ...process.env, TMDB_API_KEY: settings.tmdb_api_key },
+    proc.on('error', (err) => {
+      console.error(`[TMDB] ${label} spawn failed:`, err.message)
+      resolve({ success: false, error: err.message })
     })
-
-    let stdout = ''
-    let stderr = ''
-    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
-    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
-    proc.on('close', () => {
-      try {
-        const data = JSON.parse(stdout)
-        if (data.error) {
-          resolve({ success: false, error: data.error })
-        } else {
-          resolve({ success: true, data })
-        }
-      } catch {
-        const preview = stdout.slice(0, 200) || stderr.slice(0, 200) || '(empty)'
-        resolve({ success: false, error: `Failed to parse TMDB response: ${preview}` })
-      }
-    })
-    proc.on('error', (err) => resolve({ success: false, error: err.message }))
   })
 })
 
