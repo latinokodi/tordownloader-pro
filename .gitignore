@@ -8,5 +8,7 @@ __pycache__/
 *.pyc
 *.pyo
 electron/flaresolverr/
+electron/tmdb-provider.exe
+electron/latino-providers.exe
 tsconfig.tsbuildinfo
 INAPP-UPDATE.md
