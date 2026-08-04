@@ -66,10 +66,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = "v$version"
           $exe = Get-ChildItem release/TorDownloader-PRO-Setup-*.exe | Select-Object -First 1
-          $version = $exe.BaseName -replace 'TorDownloader-PRO-Setup-', ''
-          $tag = "build-${{ github.run_number }}"
+          # Delete existing release with this tag if present, then recreate
+          gh release delete $tag --yes --cleanup-tag 2>$null
           gh release create $tag $exe.FullName release/latest.yml release/*.blockmap `
-            --title "Build ${{ github.run_number }} ($version)" `
-            --notes "Automated build from commit ${{ github.sha }}"
+            --title "$version" `
+            --notes "Release $version — commit ${{ github.sha }}"
         shell: pwsh
