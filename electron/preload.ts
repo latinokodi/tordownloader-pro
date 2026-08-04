@@ -53,6 +53,26 @@ const api = {
   },
   checkPlugins: (): Promise<any> => ipcRenderer.invoke('check-plugins'),
   updatePlugins: (): Promise<any> => ipcRenderer.invoke('update-plugins'),
+
+  // ── TMDB Discover ──
+  tmdbLists: (): Promise<any> => ipcRenderer.invoke('tmdb-lists'),
+  tmdbDetail: (tmdbId: number, mediaType: string): Promise<any> => ipcRenderer.invoke('tmdb-detail', tmdbId, mediaType),
+  tmdbSeason: (tmdbId: number, seasonNumber: number): Promise<any> => ipcRenderer.invoke('tmdb-season', tmdbId, seasonNumber),
+  tmdbSearch: (query: string): Promise<any> => ipcRenderer.invoke('tmdb-search', query),
+  tmdbLoadMore: (mediaType: string, kind: string, page: number): Promise<any> =>
+    ipcRenderer.invoke('tmdb-load-more', mediaType, kind, page),
+  tmdbValidate: (apiKey: string): Promise<any> => ipcRenderer.invoke('tmdb-validate', apiKey),
+  latinoSearch: (imdbId: string, mediaType: string, season?: string, episode?: string): Promise<any> =>
+    ipcRenderer.invoke('latino-search', imdbId, mediaType, season, episode),
+  onLatinoSearchProgress: (callback: (progress: any) => void) => {
+    ipcRenderer.on('latino-search-progress', (_e, progress) => callback(progress))
+    return () => ipcRenderer.removeAllListeners('latino-search-progress')
+  },
+
+  // ── Stremio Catalog ──
+  catalogManifest: (): Promise<any> => ipcRenderer.invoke('catalog-manifest'),
+  catalogItems: (type: string, id: string): Promise<any> => ipcRenderer.invoke('catalog-items', type, id),
+  catalogMeta: (type: string, imdbId: string): Promise<any> => ipcRenderer.invoke('catalog-meta', type, imdbId),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

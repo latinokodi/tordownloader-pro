@@ -10,6 +10,7 @@ interface SettingsSchema {
   realdebrid_client_secret: string
   destination_folder: string
   auto_remove_completed: boolean
+  tmdb_api_key: string
 }
 
 interface Props {
@@ -35,6 +36,8 @@ export function SettingsModal({ onClose, showToast }: Props) {
   const [pluginStatus, setPluginStatus] = useState<string | null>(null)
   const [rdAuthData, setRdAuthData] = useState<any | null>(null)
   const [rdUser, setRdUser] = useState<any | null>(null)
+  const [tmdbValidating, setTmdbValidating] = useState(false)
+  const [tmdbStatus, setTmdbStatus] = useState<string | null>(null)
   const pollTimer = useRef<number | null>(null)
   const rdPollTimer = useRef<number | null>(null)
 
@@ -170,6 +173,27 @@ export function SettingsModal({ onClose, showToast }: Props) {
       else if (res.path) setSettings((s) => s ? { ...s, destination_folder: res.path } : null)
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : t.settings.folderError, 'error')
+    }
+  }
+
+  const handleValidateTmdb = async () => {
+    if (!settings?.tmdb_api_key) return
+    setTmdbValidating(true)
+    setTmdbStatus(null)
+    try {
+      const electronAPI = (window as any).electronAPI
+      const res = await electronAPI.tmdbValidate(settings.tmdb_api_key)
+      if (res.success) {
+        setTmdbStatus('Valid key')
+        showToast('TMDB API key validada', 'success')
+      } else {
+        setTmdbStatus(res.error || 'Invalid key')
+        showToast(res.error || 'Clave inválida', 'error')
+      }
+    } catch (e: any) {
+      setTmdbStatus(e.message || 'Validation failed')
+    } finally {
+      setTmdbValidating(false)
     }
   }
 
@@ -321,6 +345,39 @@ export function SettingsModal({ onClose, showToast }: Props) {
           {/* Local Storage */}
           <div className="space-y-4">
             <h3 className="text-accent font-mono text-sm uppercase tracking-widest border-b border-border pb-2">{t.settings.localStorage}</h3>
+
+            {/* TMDB API Key */}
+            <div>
+              <label className="block text-xs font-mono text-text-muted mb-2 uppercase">TMDB API Key</label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  className="input-field flex-1"
+                  placeholder="Ingresa tu TMDB API key (gratis en themoviedb.org)"
+                  value={settings?.tmdb_api_key || ''}
+                  onChange={(e) => { setSettings((s) => s ? { ...s, tmdb_api_key: e.target.value } : null); setTmdbStatus(null) }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-accent whitespace-nowrap text-xs"
+                  onClick={handleValidateTmdb}
+                  disabled={tmdbValidating || !settings?.tmdb_api_key}
+                >
+                  {tmdbValidating ? 'Validando...' : 'Validar'}
+                </button>
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-xs text-text-muted font-mono">
+                  Gratis en themoviedb.org/settings/api
+                </p>
+                {tmdbStatus && (
+                  <span className={`text-xs font-mono font-bold uppercase ${tmdbStatus === 'Valid key' ? 'text-success' : 'text-danger'}`}>
+                    {tmdbStatus}
+                  </span>
+                )}
+              </div>
+            </div>
+
             <div>
               <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.downloadDest}</label>
               <div className="flex gap-2">
