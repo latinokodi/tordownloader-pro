@@ -24,10 +24,10 @@ extraResources:
       - "engines/**"
       - "novaprinter.py"
       - "helpers.py"
-  - from: electron/latino-providers.py
-    to: latino-providers.py
-  - from: electron/tmdb-provider.py
-    to: tmdb-provider.py
+  - from: electron/tmdb-provider.exe
+    to: tmdb-provider.exe
+  - from: electron/latino-providers.exe
+    to: latino-providers.exe
 
 win:
   target:
