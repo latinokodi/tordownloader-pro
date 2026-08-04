@@ -19,7 +19,8 @@ export function initDB(): void {
       realdebrid_client_secret VARCHAR DEFAULT '',
       destination_folder VARCHAR DEFAULT '',
       auto_remove_completed BOOLEAN DEFAULT 0,
-      tmdb_api_key VARCHAR DEFAULT ''
+      tmdb_api_key VARCHAR DEFAULT '',
+      last_update_prompt VARCHAR DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS downloads (
@@ -47,6 +48,7 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN realdebrid_client_id VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN realdebrid_client_secret VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN tmdb_api_key VARCHAR DEFAULT ''`,
+    `ALTER TABLE settings ADD COLUMN last_update_prompt VARCHAR DEFAULT ''`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
@@ -71,6 +73,7 @@ export interface Settings {
   destination_folder: string;
   auto_remove_completed: boolean;
   tmdb_api_key: string;
+  last_update_prompt: string;
 }
 
 export interface Download {

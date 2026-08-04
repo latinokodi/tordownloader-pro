@@ -101,7 +101,7 @@ function ensureDeps(): Promise<boolean> {
 
 // ── Runner ──────────────────────────────────────────────
 
-const SEARCH_TIMEOUT_MS = 60_000 // 60 seconds total
+const SEARCH_TIMEOUT_MS = 90_000 // 90 seconds — enough for 17 engines through CF
 
 export interface SearchProgress {
   type: 'engine_start' | 'engine_results' | 'done'

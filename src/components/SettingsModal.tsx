@@ -38,6 +38,8 @@ export function SettingsModal({ onClose, showToast }: Props) {
   const [rdUser, setRdUser] = useState<any | null>(null)
   const [tmdbValidating, setTmdbValidating] = useState(false)
   const [tmdbStatus, setTmdbStatus] = useState<string | null>(null)
+  const [updateChecking, setUpdateChecking] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null)
   const pollTimer = useRef<number | null>(null)
   const rdPollTimer = useRef<number | null>(null)
 
@@ -194,6 +196,40 @@ export function SettingsModal({ onClose, showToast }: Props) {
       setTmdbStatus(e.message || 'Validation failed')
     } finally {
       setTmdbValidating(false)
+    }
+  }
+
+  const handleCheckForUpdates = async () => {
+    setUpdateChecking(true)
+    setUpdateStatus(null)
+    try {
+      const electronAPI = (window as any).electronAPI
+      // Set up one-shot listeners for the result
+      const cleanupAvailable = electronAPI.onUpdateAvailable((version: string) => {
+        setUpdateStatus(version)
+        setUpdateChecking(false)
+        cleanupAvailable()
+        cleanupNotAvailable()
+      })
+      const cleanupNotAvailable = electronAPI.onUpdateNotAvailable(() => {
+        setUpdateStatus(t.settings.updateUpToDate)
+        setUpdateChecking(false)
+        cleanupAvailable()
+        cleanupNotAvailable()
+      })
+      await electronAPI.checkForUpdates()
+      // If neither event fires within 15s, timeout
+      setTimeout(() => {
+        if (updateChecking) {
+          setUpdateStatus(t.settings.updateCheckFailed)
+          setUpdateChecking(false)
+          cleanupAvailable()
+          cleanupNotAvailable()
+        }
+      }, 15000)
+    } catch (e: any) {
+      setUpdateStatus(t.settings.updateCheckFailed)
+      setUpdateChecking(false)
     }
   }
 
@@ -402,6 +438,34 @@ export function SettingsModal({ onClose, showToast }: Props) {
               <label htmlFor="autoRemove" className="text-sm font-mono text-text-main cursor-pointer select-none">
                 {t.settings.autoRemove}
               </label>
+            </div>
+
+            {/* App Updates */}
+            <div className="mt-6 pt-4 border-t border-border">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col">
+                  <span className="text-xs font-mono text-text-muted uppercase">{t.settings.updateTitle}</span>
+                  {updateStatus && (
+                    <span className={`text-xs font-mono font-bold uppercase mt-1 ${
+                      updateStatus === t.settings.updateUpToDate ? 'text-success'
+                      : updateStatus === t.settings.updateCheckFailed ? 'text-danger'
+                      : 'text-accent'
+                    }`}>
+                      {updateStatus === t.settings.updateUpToDate ? updateStatus
+                        : updateStatus === t.settings.updateCheckFailed ? updateStatus
+                        : `v${updateStatus}`}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="btn border border-border text-text-main hover:border-accent text-xs font-mono"
+                  onClick={handleCheckForUpdates}
+                  disabled={updateChecking}
+                >
+                  {updateChecking ? t.settings.updateChecking : t.settings.checkForUpdates}
+                </button>
+              </div>
             </div>
           </div>
 

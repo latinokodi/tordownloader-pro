@@ -23,10 +23,17 @@ function App() {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
   const [downloads, setDownloads] = useState<any[]>([])
   const [destFolder, setDestFolder] = useState('')
-  const [flaresolverrReady, setFlareSolverrReady] = useState(false)
+  const [flaresolverrStatus, setFlareSolverrStatus] = useState<'ready' | 'starting' | 'failed' | 'off'>('starting')
   const [downloadService, setDownloadService] = useState<'torbox' | 'realdebrid'>('torbox')
   const [hasTorbox, setHasTorbox] = useState(false)
   const [hasRealdebrid, setHasRealdebrid] = useState(false)
+
+  // ── Auto-update state ──
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null)
+  const [updateDownloading, setUpdateDownloading] = useState(false)
+  const [updateDownloaded, setUpdateDownloaded] = useState(false)
+  const [updatePercent, setUpdatePercent] = useState(0)
+  const [updateError, setUpdateError] = useState<string | null>(null)
 
   const { addTab, setTabResult, setTabError, appendResults, setCurrentEngine, markSearchDone } = useSearchTabsStore()
 
@@ -83,8 +90,14 @@ function App() {
     }
     if ((window as any).electronAPI?.onFlareSolverrReady) {
       (window as any).electronAPI.onFlareSolverrReady(() => {
-        setFlareSolverrReady(true)
+        setFlareSolverrStatus('ready')
       })
+    }
+    // Query initial FlareSolverr status
+    if ((window as any).electronAPI?.flaresolverrStatus) {
+      (window as any).electronAPI.flaresolverrStatus().then((res: any) => {
+        if (res?.status) setFlareSolverrStatus(res.status)
+      }).catch(() => {})
     }
 
     // Streaming search progress listener
@@ -107,11 +120,37 @@ function App() {
         store.setTabError(activeTabId, error)
       }
     })
-    
+
+    // ── Auto-update listeners ──
+    const ea = (window as any).electronAPI
+    const cleanupUpdateAvailable = ea?.onUpdateAvailable?.((version: string) => {
+      setUpdateVersion(version)
+    })
+    const cleanupUpdateNotAvailable = ea?.onUpdateNotAvailable?.(() => {
+      // Called on manual check — no UI change needed here
+    })
+    const cleanupUpdateProgress = ea?.onUpdateDownloadProgress?.((percent: number) => {
+      setUpdatePercent(Math.round(percent))
+    })
+    const cleanupUpdateDownloaded = ea?.onUpdateDownloaded?.(() => {
+      setUpdateDownloading(false)
+      setUpdateDownloaded(true)
+    })
+    const cleanupUpdateError = ea?.onUpdateError?.((message: string) => {
+      setUpdateDownloading(false)
+      setUpdateError(message)
+      showToast(message, 'error')
+    })
+
     return () => {
       window.clearInterval(timer)
       cleanupSearchProgress?.()
       cleanupSearchError?.()
+      cleanupUpdateAvailable?.()
+      cleanupUpdateNotAvailable?.()
+      cleanupUpdateProgress?.()
+      cleanupUpdateDownloaded?.()
+      cleanupUpdateError?.()
     }
   }, [refreshDownloads])
 
@@ -240,9 +279,21 @@ function App() {
         <div className="p-6 border-b border-border flex items-center gap-3">
           <div className="relative">
             <div className="w-8 h-8 bg-accent flex items-center justify-center text-bg-deep font-black font-mono">TB</div>
-            {flaresolverrReady && (
-              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-bg-panel" title="FlareSolverr activo" />
-            )}
+            {/* FlareSolverr status indicator */}
+            <span
+              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg-panel ${
+                flaresolverrStatus === 'ready' ? 'bg-green-500'
+                : flaresolverrStatus === 'starting' ? 'bg-yellow-500 animate-pulse'
+                : flaresolverrStatus === 'failed' ? 'bg-red-500'
+                : 'bg-gray-600'
+              }`}
+              title={
+                flaresolverrStatus === 'ready' ? 'FlareSolverr — ready'
+                : flaresolverrStatus === 'starting' ? 'FlareSolverr — starting...'
+                : flaresolverrStatus === 'failed' ? 'FlareSolverr — failed (max restarts)'
+                : 'FlareSolverr — not installed'
+              }
+            />
           </div>
           <span className="font-bold uppercase tracking-wider text-sm">TorDownloader</span>
         </div>
@@ -264,18 +315,62 @@ function App() {
              </div>
           </button>
           <button
-            className={`w-full text-left px-4 py-3 font-mono text-sm tracking-wide uppercase transition-colors ${activeNav === 'logs' ? 'bg-accent/10 text-accent border-l-2 border-accent' : 'text-text-muted hover:text-text-main'}`}
-            onClick={() => setActiveNav('logs')}
-          >
-            <div className="flex items-center gap-2"><ScrollText size={16}/> {t.nav.logs}</div>
-          </button>
-          <button
             className={`w-full text-left px-4 py-3 font-mono text-sm tracking-wide uppercase transition-colors ${activeNav === 'discover' ? 'bg-accent/10 text-accent border-l-2 border-accent' : 'text-text-muted hover:text-text-main'}`}
             onClick={() => setActiveNav('discover')}
           >
             <div className="flex items-center gap-2"><Compass size={16}/> Discover</div>
           </button>
+          <button
+            className={`w-full text-left px-4 py-3 font-mono text-sm tracking-wide uppercase transition-colors ${activeNav === 'logs' ? 'bg-accent/10 text-accent border-l-2 border-accent' : 'text-text-muted hover:text-text-main'}`}
+            onClick={() => setActiveNav('logs')}
+          >
+            <div className="flex items-center gap-2"><ScrollText size={16}/> {t.nav.logs}</div>
+          </button>
         </nav>
+
+        {/* FlareSolverr status */}
+        <div className="px-4 py-3 border-t border-border space-y-2">
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                flaresolverrStatus === 'ready' ? 'bg-green-500'
+                : flaresolverrStatus === 'starting' ? 'bg-yellow-500 animate-pulse'
+                : flaresolverrStatus === 'failed' ? 'bg-red-500'
+                : 'bg-gray-600'
+              }`}
+            />
+            <span className={`text-xs font-mono uppercase ${
+              flaresolverrStatus === 'ready' ? 'text-success'
+              : flaresolverrStatus === 'starting' ? 'text-yellow-500'
+              : flaresolverrStatus === 'failed' ? 'text-danger'
+              : 'text-text-muted'
+            }`}>
+              {flaresolverrStatus === 'ready' ? 'FlareSolverr Ready'
+                : flaresolverrStatus === 'starting' ? 'FlareSolverr Starting...'
+                : flaresolverrStatus === 'failed' ? 'FlareSolverr Failed'
+                : 'FlareSolverr Off'}
+            </span>
+          </div>
+          <button
+            className="w-full btn border border-border text-text-main hover:border-accent text-xs font-mono"
+            onClick={async () => {
+              setFlareSolverrStatus('starting')
+              try {
+                const ea = (window as any).electronAPI
+                const res = await ea?.flaresolverrRestart()
+                if (res?.success) {
+                  setFlareSolverrStatus('ready')
+                } else {
+                  setFlareSolverrStatus('failed')
+                }
+              } catch {
+                setFlareSolverrStatus('failed')
+              }
+            }}
+          >
+            {flaresolverrStatus === 'starting' ? 'Restarting...' : 'Restart FlareSolverr'}
+          </button>
+        </div>
 
         <div className="p-4 border-t border-border space-y-2">
           <LangToggle />
@@ -447,6 +542,76 @@ function App() {
           onClose={handleSettingsClose}
           showToast={showToast}
         />
+      )}
+
+      {/* ── Update dialog ── */}
+      {updateVersion && !updateDownloading && !updateDownloaded && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
+          <div className="glass-panel w-full max-w-md bg-bg-panel border border-border shadow-2xl p-8 text-center space-y-6">
+            <h3 className="text-accent font-mono text-sm uppercase tracking-widest">{t.update.available}</h3>
+            <p className="text-2xl font-black text-text-heading">v{updateVersion}</p>
+            <p className="text-text-muted font-mono text-sm">{t.update.currentVersion} 1.0.12</p>
+            <div className="flex gap-4 justify-center">
+              <button
+                className="btn border border-border text-text-muted hover:text-text-main"
+                onClick={() => {
+                  setUpdateVersion(null)
+                  ;(window as any).electronAPI?.dismissUpdate()
+                }}
+              >
+                {t.update.notNow}
+              </button>
+              <button
+                className="btn btn-accent"
+                onClick={() => {
+                  setUpdateDownloading(true)
+                  ;(window as any).electronAPI?.downloadUpdate()
+                }}
+              >
+                {t.update.download}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {updateDownloading && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
+          <div className="glass-panel w-full max-w-md bg-bg-panel border border-border shadow-2xl p-8 text-center space-y-4">
+            <h3 className="text-accent font-mono text-sm uppercase tracking-widest">{t.update.downloading}</h3>
+            <div className="w-full bg-bg-deep border border-border h-3">
+              <div className="h-full bg-accent transition-all duration-300" style={{ width: `${updatePercent}%` }} />
+            </div>
+            <p className="text-text-muted font-mono text-sm">{updatePercent}%</p>
+          </div>
+        </div>
+      )}
+
+      {updateDownloaded && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
+          <div className="glass-panel w-full max-w-md bg-bg-panel border border-border shadow-2xl p-8 text-center space-y-6">
+            <h3 className="text-success font-mono text-sm uppercase tracking-widest">{t.update.ready}</h3>
+            <div className="flex gap-4 justify-center">
+              <button
+                className="btn border border-border text-text-muted hover:text-text-main"
+                onClick={() => {
+                  setUpdateDownloaded(false)
+                  setUpdateVersion(null)
+                }}
+              >
+                {t.update.later}
+              </button>
+              <button
+                className="btn btn-accent"
+                onClick={() => {
+                  ;(window as any).electronAPI?.installUpdate()
+                }}
+              >
+                {t.update.restartNow}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && (

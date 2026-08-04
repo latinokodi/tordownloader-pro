@@ -117,6 +117,11 @@ const es: TranslationKeys = {
     pluginsCheckFailed: 'Error al buscar actualizaciones',
     checkingPlugins: 'VERIFICANDO...',
     updatePlugins: 'ACTUALIZAR PLUGINS',
+    updateTitle: 'Actualizaciones',
+    checkForUpdates: 'BUSCAR ACTUALIZACIONES',
+    updateChecking: 'Verificando...',
+    updateUpToDate: 'Actualizado',
+    updateCheckFailed: 'Verificación falló',
   },
   toasts: {
     magnetAdded: '¡Magnet agregado a TorBox!',
@@ -131,6 +136,17 @@ const es: TranslationKeys = {
     noDestFolder: 'No hay carpeta de destino configurada. Defina una en Configuración.',
     failedOpenFolder: 'Error al abrir carpeta',
     searchFailed: 'Búsqueda falló',
+  },
+  update: {
+    available: '¡Nueva versión disponible!',
+    currentVersion: 'Estás en',
+    download: 'Descargar',
+    notNow: 'Ahora no',
+    downloading: 'Descargando actualización...',
+    restartNow: 'Reiniciar Ahora',
+    later: 'Después',
+    ready: '¡Actualización lista! Reinicia para instalar.',
+    error: 'Error de actualización',
   },
 }
 
