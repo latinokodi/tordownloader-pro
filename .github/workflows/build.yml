@@ -69,9 +69,12 @@ jobs:
           $version = (Get-Content package.json | ConvertFrom-Json).version
           $tag = "v$version"
           $exe = Get-ChildItem release/TorDownloader-PRO-Setup-*.exe | Select-Object -First 1
+          # Get tag annotation if it exists, otherwise use commit-based fallback
+          $tagMsg = git tag -l --format='%(contents)' $tag 2>$null
+          if (-not $tagMsg) { $tagMsg = "Release $version — commit ${{ github.sha }}" }
           # Delete existing release with this tag if present, then recreate
           gh release delete $tag --yes --cleanup-tag 2>$null
           gh release create $tag $exe.FullName release/latest.yml release/*.blockmap `
             --title "$version" `
-            --notes "Release $version — commit ${{ github.sha }}"
+            --notes $tagMsg
         shell: pwsh
