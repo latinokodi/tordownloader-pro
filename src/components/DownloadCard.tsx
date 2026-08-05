@@ -1,4 +1,5 @@
 import { useT } from '../i18n'
+import { memo } from 'react'
 
 interface Download {
   id: number
@@ -16,6 +17,8 @@ interface Download {
   service?: string
 }
 
+type T = ReturnType<typeof useT>
+
 interface Props {
   download: Download
   onDelete: (torboxId: string, isCompleted: boolean) => void
@@ -29,7 +32,7 @@ function formatSpeed(bytesPerSec: number): string {
 }
 
 /** Translate a raw status string (from RD/TorBox API or worker) to a human-readable label */
-function translateStatus(value: string | undefined, t: any): string {
+function translateStatus(value: string | undefined, t: T): string {
   if (!value) return ''
   const lower = value.toLowerCase()
 
@@ -58,7 +61,7 @@ function translateStatus(value: string | undefined, t: any): string {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
-function currentPhase(dl: Download, t: any) {
+function currentPhase(dl: Download, t: T) {
   const cloudState = (dl.status || '').toLowerCase()
   const localState = (dl.local_status || 'pending').toLowerCase()
   // RD uses 'downloaded', TorBox uses 'completed'/'cached'/'finished'
@@ -94,7 +97,7 @@ function isActive(download: Download): boolean {
   return true
 }
 
-export function DownloadCard({ download: dl, onDelete, onCancel }: Props) {
+const DownloadCardComponent = function DownloadCard({ download: dl, onDelete, onCancel }: Props) {
   const t = useT()
   const phase = currentPhase(dl, t)
   const progress = Math.max(0, Math.min(100, Math.round(phase.progress)))
@@ -163,3 +166,5 @@ export function DownloadCard({ download: dl, onDelete, onCancel }: Props) {
     </article>
   )
 }
+
+export const DownloadCard = memo(DownloadCardComponent)
