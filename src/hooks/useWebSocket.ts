@@ -1,25 +1,25 @@
 import { useEffect, useRef } from 'react'
+import { getElectronAPI, type Download } from '../types/electron'
 
 type MessageHandler = (data: unknown) => void
 
 /**
- * Auto-reconnecting WebSocket hook, now mapped to Electron IPC for statuses.
+ * Listens for download updates via Electron IPC.
  */
-export function useWebSocket(path: string, onMessage: MessageHandler) {
+export function useWebSocket(_path: string, onMessage: MessageHandler) {
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
 
   useEffect(() => {
-    const electronAPI = (window as any).electronAPI
-    if (!electronAPI) return
+    const ea = getElectronAPI()
+    if (!ea) return
 
-    const cleanup = electronAPI.onDownloadsUpdated(() => {
-      // Fetch latest downloads when updated
-      electronAPI.getDownloads().then((data: any) => {
+    const cleanup = ea.onDownloadsUpdated(() => {
+      ea.getDownloads().then((data: Download[]) => {
         onMessageRef.current({ type: 'status', downloads: data })
       })
     })
-    
+
     return cleanup
   }, [])
 }
