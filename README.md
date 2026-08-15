@@ -7,7 +7,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/plataforma-Windows%20x64-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/versi%C3%B3n-1.0.15-darkgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/versi%C3%B3n-1.0.16-darkgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/licencia-MIT-yellow?style=flat-square" />
 </p>
 
@@ -15,7 +15,7 @@
 
 ## Características
 
-- **Metabúsqueda integrada** — 17 motores de búsqueda funcionando simultáneamente. Sin Docker, sin Jackett, sin configuración.
+- **Metabúsqueda integrada** — 23 motores de búsqueda funcionando simultáneamente. Sin Docker, sin Jackett, sin configuración.
 - **TorBox + Real-Debrid** — Soporte para ambos servicios débrid. Autenticación OAuth. Selección de archivos RD.
 - **Discover** — Catálogo TMDB con exploración de películas y series. Búsqueda automática en proveedores latinos.
 - **Actualizaciones automáticas** — La app se actualiza sola desde GitHub Releases. Notificación, descarga y reinicio sin reinstalar.
@@ -40,7 +40,7 @@
 ## Uso
 
 ### Búsqueda
-Escribe y presiona Enter. Resultados de 17 motores con título, tamaño, seeders, indexer y enlace.
+Escribe y presiona Enter. Resultados de 23 motores con título, tamaño, seeders, indexer y enlace.
 
 ### Discover
 Explora el catálogo TMDB, selecciona una película o serie, elige temporada y episodio. La app busca automáticamente en proveedores de contenido latino.
