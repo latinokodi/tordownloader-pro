@@ -23,15 +23,6 @@ const REALDEBRID_CDN_DOMAINS = [
 
 const ALL_CDN_DOMAINS = [...TORBOX_CDN_DOMAINS, ...REALDEBRID_CDN_DOMAINS];
 
-function isTorboxCDN(url: string): boolean {
-  try {
-    const hostname = new URL(url).hostname.toLowerCase();
-    return TORBOX_CDN_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
-  } catch {
-    return false;
-  }
-}
-
 function isDebridCDN(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
@@ -41,7 +32,7 @@ function isDebridCDN(url: string): boolean {
   }
 }
 
-export { isTorboxCDN, isDebridCDN };
+export { isDebridCDN };
 
 export interface DownloadProgress {
   bytes_done: number;

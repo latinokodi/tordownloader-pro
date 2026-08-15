@@ -12,3 +12,11 @@ electron/tmdb-provider.exe
 electron/latino-providers.exe
 tsconfig.tsbuildinfo
 INAPP-UPDATE.md
+
+# Secrets / credentials — never commit
+.env
+.env.*
+*.local
+*.pem
+*.key
+cf_cookies.json
