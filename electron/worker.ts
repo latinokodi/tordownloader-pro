@@ -2,9 +2,11 @@ import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
+import { computeDestination, safeSegment, parseReleaseName } from './media-layout';
 import path from 'path';
 import fs from 'fs';
-import { BrowserWindow } from 'electron';
+import { spawn } from 'child_process';
+import { BrowserWindow, app } from 'electron';
 
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
@@ -146,7 +148,7 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
           console.log(`[Worker] Queued TorBox download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
-          runTorboxDownload(tid, dlData, settings.destination_folder, settings.torbox_token, mainWindow).catch(err => {
+          runTorboxDownload(tid, dlData, settings, settings.torbox_token, mainWindow).catch(err => {
             console.error(`Local download failed for ${tid}:`, err);
             updateDownload(tid, { local_status: `failed: ${err.message}` });
             activeLocalDownloads.delete(tid);
@@ -238,7 +240,7 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
           console.log(`[Worker] Queued RD download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
-          runRealdebridDownload(tid, dlData, settings.destination_folder, settings.realdebrid_token, mainWindow).catch(err => {
+          runRealdebridDownload(tid, dlData, settings, settings.realdebrid_token, mainWindow).catch(err => {
             console.error(`RD download failed for ${tid}:`, err);
             updateDownload(tid, { local_status: `failed: ${err.message}` });
             activeLocalDownloads.delete(tid);
@@ -255,14 +257,28 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
   }
 }
 
-async function runTorboxDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
+// ── Destination resolution ─────────────────────────────
+// Only media downloads (type explicitly movie/series) get the Jellyfin
+// radarr/sonarr layout. Everything else keeps the flat destination folder.
+async function resolveDestination(settings: any, name: string, type: 'movie' | 'series' | ''): Promise<string> {
+  if (type === 'movie' || type === 'series') {
+    const { root, folder } = await computeDestination(settings, name, type);
+    if (!root) throw new Error('Destination folder is not configured');
+    return path.join(root, ...folder.split('/').map(safeSegment));
+  }
+  if (!settings.destination_folder || !settings.destination_folder.trim()) {
+    throw new Error('Destination folder is not configured');
+  }
+  return settings.destination_folder;
+}
+
+async function runTorboxDownload(tid: string, dlData: any, settings: any, token: string, mainWindow: BrowserWindow | null) {
   try {
-    if (!destRoot || !destRoot.trim()) {
-      throw new Error('Destination folder is not configured');
-    }
+    const rec = getDownloadByTorboxId(tid);
+    const type: 'movie' | 'series' | '' = rec?.type || '';
+    const destFolder = await resolveDestination(settings, dlData.name || tid, type);
 
     const tb = new TorboxAPI(token);
-    const destFolder = destRoot;
     safeMkdirSync(destFolder);
 
     let files = dlData.files || [];
@@ -298,9 +314,19 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
       // Ensure subdirectory exists
       safeMkdirSync(path.dirname(filePath));
 
-      const linkRes = await tb.getDownloadLink(tid, String(fileId));
-      if (!linkRes.success || !linkRes.data) {
-        throw new Error(`TorBox did not return a download link for ${fileName}`);
+      // TorBox requestdl is metered and can transiently fail (CDN link not ready,
+      // throttle, timed out). Retry before giving up, and surface the REAL error.
+      let linkRes: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        linkRes = await tb.getDownloadLink(tid, String(fileId));
+        if (linkRes && linkRes.success && linkRes.data) break;
+        const reason = linkRes ? (linkRes.error || linkRes.detail || 'no data') : 'no response';
+        console.warn(`[Worker] TorBox requestdl failed for ${fileName} (attempt ${attempt}/3):`, reason);
+        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
+      }
+      if (!linkRes || !linkRes.success || !linkRes.data) {
+        const reason = linkRes ? (linkRes.error || linkRes.detail || 'no data') : 'no response';
+        throw new Error(`TorBox did not return a download link for ${fileName}: ${reason}`);
       }
 
       const downloadUrl = linkRes.data;
@@ -370,6 +396,12 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
       local_path: destFolder,
     });
     console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
+    if (type === 'series') {
+      renameForJellyfin(dlData.name || tid, rec, destFolder);
+    }
+    if (type === 'movie' || type === 'series') {
+      await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder);
+    }
     
   } catch (err: any) {
     updateDownload(tid, {
@@ -385,14 +417,13 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
 
 // ── Real-Debrid local download ─────────────────────────
 
-async function runRealdebridDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
+async function runRealdebridDownload(tid: string, dlData: any, settings: any, token: string, mainWindow: BrowserWindow | null) {
   try {
-    if (!destRoot || !destRoot.trim()) {
-      throw new Error('Destination folder is not configured');
-    }
+    const rec = getDownloadByTorboxId(tid);
+    const type: 'movie' | 'series' | '' = rec?.type || '';
+    const destFolder = await resolveDestination(settings, dlData.filename || dlData.name || tid, type);
 
     const rd = new RealDebridAPI(token);
-    const destFolder = destRoot;
     safeMkdirSync(destFolder);
 
     // Get torrent info to obtain the links array
@@ -499,6 +530,12 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
       local_path: destFolder,
     });
     console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
+    if (type === 'series') {
+      renameForJellyfin(dlData.filename || dlData.name || tid, rec, destFolder);
+    }
+    if (type === 'movie' || type === 'series') {
+      await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder);
+    }
 
   } catch (err: any) {
     updateDownload(tid, {
@@ -509,5 +546,109 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
     if (mainWindow) mainWindow.webContents.send('downloads-updated');
+  }
+}
+
+// ── Subtítulos automáticos (es/en) ─────────────────────
+const VIDEO_EXT_RE = /\.(mkv|mp4|avi|m4v|mov|wmv)$/i;
+const EP_RE = /[sS](\d{1,2})[eE](\d{1,2})/;
+
+// ── Renombrado Jellyfin (serie) ─────────────────────────
+// Título derivado del nombre del torrent (parseReleaseName); código SxxEyy
+// de la metadata guardada al agregar (season/episode) o, fallback, del nombre.
+function renameForJellyfin(name: string, rec: { season?: number | null; episode?: number | null } | undefined, destFolder: string) {
+  try {
+    const videos = fs.readdirSync(destFolder)
+      .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
+      .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
+    if (videos.length === 0) return;
+
+    const epMatch = name.match(EP_RE);
+    const season = rec?.season ?? (epMatch ? parseInt(epMatch[1], 10) : undefined);
+    const episode = rec?.episode ?? (epMatch ? parseInt(epMatch[2], 10) : undefined);
+    if (!season || !episode) return; // SxxEyy no determinable → mantener nombre original
+
+    const target = path.join(destFolder, videos[0]);
+    const ext = path.extname(target);
+    const title = parseReleaseName(name).title;
+    const code = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+    const newPath = path.join(destFolder, `${title}.${code}${ext}`);
+    if (newPath === target) return;
+    fs.renameSync(target, newPath);
+    console.log(`[Worker] Renamed ${videos[0]} → ${path.basename(newPath)}`);
+  } catch (e: any) {
+    console.log(`[Worker] rename skip: ${e.message}`);
+  }
+}
+
+function subtitleCommand(): { cmd: string; args: string[] } | null {
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+  if (isDev) {
+    const scriptPath = path.join(__dirname, '..', 'electron', 'subtitles.py');
+    if (!fs.existsSync(scriptPath)) return null;
+    return { cmd: 'python', args: [scriptPath] };
+  }
+  // Production: prefer the bundled .exe, fall back to system python + .py
+  const base = path.join(process.resourcesPath || app.getAppPath(), 'subtitles');
+  const exePath = base + '.exe';
+  if (fs.existsSync(exePath)) return { cmd: exePath, args: [] };
+  const scriptPath = base + '.py';
+  if (fs.existsSync(scriptPath)) return { cmd: 'python', args: [scriptPath] };
+  return null;
+}
+
+/**
+ * Tras completar una descarga media, busca el/los video(s) en la carpeta
+ * destino y descarga subtítulos (español + inglés) vía electron/subtitles.py.
+ * Fire-and-forget: errores solo se loguean, nunca fallan la descarga.
+ */
+async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string) {
+  try {
+    const run = subtitleCommand();
+    if (!run) {
+      console.log('[Subs] subtitles.py no encontrado, saltando subtítulos');
+      return;
+    }
+
+    const videos = fs.readdirSync(destFolder)
+      .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
+      .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
+    if (videos.length === 0) return;
+
+    // Título base: quitar año, SxxExx, tags de calidad y release group
+    const epMatch = name.match(EP_RE);
+    const isSeries = type === 'series' || !!epMatch;
+    let title = name
+      .replace(/\b(19|20)\d{2}\b/g, ' ')
+      .replace(EP_RE, ' ')
+      .replace(/[.\-_]+/g, ' ')
+      .replace(/\b(1080p|720p|4k|2160p|web[- ]?dl|bluray|webrip|hdr|x264|x265|h\.?265|hevc|h\.?264|aac|ac3|ddp5[.\s]?1|atmos|5[.\s]?1|7[.\s]?1|dual|latino|english|spanish|extended|unrated|repack|proper|nf|amzn|atvp|itunes|hmax|dsnp|uhd|remux|s\d{1,2}|complete|season|series|episode)\b/gi, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const tokens = title.split(' ');
+    while (tokens.length > 3) {
+      const last = tokens[tokens.length - 1];
+      if (/^[A-Z0-9]{2,}$/.test(last) && last !== last.toLowerCase()) tokens.pop();
+      else break;
+    }
+    title = tokens.join(' ').trim();
+    if (!title) title = name;
+
+    for (const v of videos) {
+      const videoPath = path.join(destFolder, v);
+      const args = [...run.args, 'fetch', '--title', title, '--type', isSeries ? 'series' : 'movie', '--dest', videoPath];
+      if (isSeries && epMatch) args.push('--season', epMatch[1], '--episode', epMatch[2]);
+      await new Promise<void>((resolve) => {
+        const proc = spawn(run.cmd, args, { windowsHide: true, env: process.env as any });
+        let out = '';
+        proc.stdout?.on('data', (c: Buffer) => (out += c.toString()));
+        proc.stderr?.on('data', (c: Buffer) => (out += c.toString()));
+        const timer = setTimeout(() => { try { proc.kill('SIGTERM') } catch {} resolve(); }, 60_000);
+        proc.on('close', () => { clearTimeout(timer); console.log(`[Subs] ${v}: ${out.trim().split('\n').pop()}`); resolve(); });
+        proc.on('error', (e) => { clearTimeout(timer); console.log(`[Subs] error: ${e.message}`); resolve(); });
+      });
+    }
+  } catch (e: any) {
+    console.log(`[Subs] skip: ${e.message}`);
   }
 }

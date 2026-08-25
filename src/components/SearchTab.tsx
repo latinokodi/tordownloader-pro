@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useSearchTabsStore } from '../store/searchTabs'
 import type { SearchResult } from '../store/searchTabs'
 import { api } from '../hooks/useApi'
@@ -30,7 +31,7 @@ function buildMagnetFromHash(infoHash: string, title: string | null): string {
   return magnet
 }
 
-async function handleDownload(r: SearchResult, onAdded: () => void, showToast: Props['showToast'], t: ReturnType<typeof useT>, service: string = 'torbox') {
+async function handleDownload(r: SearchResult, onAdded: () => void, showToast: Props['showToast'], t: ReturnType<typeof useT>, service: string = 'torbox', type: string = '') {
   const link = r.link
 
   const trErr = (msg: string) => {
@@ -44,6 +45,7 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
         magnet: link,
         info_hash: r.info_hash,
         service,
+        type,
       })
       if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
       else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
@@ -55,7 +57,7 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
 
   if (link && link.endsWith('.torrent')) {
     try {
-      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service })
+      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service, type })
       if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
       else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
     } catch (e: unknown) {
@@ -71,6 +73,7 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
         magnet,
         info_hash: r.info_hash,
         service,
+        type,
       })
       if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
       else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
@@ -87,6 +90,7 @@ export function SearchTab({ onDownloadAdded, showToast, service, serviceAvailabl
   const t = useT()
   const { tabs, activeTabId } = useSearchTabsStore()
   const tab = activeTabId ? tabs[activeTabId] : null
+  const [types, setTypes] = useState<Record<number, string>>({})
 
   if (!tab) {
     return (
@@ -166,14 +170,25 @@ export function SearchTab({ onDownloadAdded, showToast, service, serviceAvailabl
               <span className="text-accent truncate">{r.indexer}</span>
             </div>
           </div>
-          <button
-            className="btn btn-accent whitespace-nowrap"
-            disabled={(!r.link && !r.info_hash) || !serviceAvailable}
-            title={!serviceAvailable ? 'No token configured for selected service' : undefined}
-            onClick={() => handleDownload(r, onDownloadAdded, showToast, t, service)}
-          >
-            {(!r.link && !r.info_hash) ? t.search.unavailable : !serviceAvailable ? 'No token' : t.search.acquire}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <select
+              className="btn border border-border text-[10px] px-2 py-1 bg-bg-deep font-mono text-text-main"
+              value={types[i] || ''}
+              onChange={(e) => setTypes({ ...types, [i]: e.target.value })}
+            >
+              <option value="">{t.search.typeNone}</option>
+              <option value="movie">{t.search.typeMovie}</option>
+              <option value="series">{t.search.typeSeries}</option>
+            </select>
+            <button
+              className="btn btn-accent whitespace-nowrap"
+              disabled={(!r.link && !r.info_hash) || !serviceAvailable}
+              title={!serviceAvailable ? 'No token configured for selected service' : undefined}
+              onClick={() => handleDownload(r, onDownloadAdded, showToast, t, service, types[i] || '')}
+            >
+              {(!r.link && !r.info_hash) ? t.search.unavailable : !serviceAvailable ? 'No token' : t.search.acquire}
+            </button>
+          </div>
         </div>
       ))}
     </div>

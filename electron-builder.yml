@@ -28,6 +28,8 @@ extraResources:
     to: tmdb-provider.exe
   - from: electron/latino-providers.exe
     to: latino-providers.exe
+  - from: electron/subtitles.exe
+    to: subtitles.exe
 
 win:
   target:

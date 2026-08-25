@@ -9,6 +9,8 @@ interface SettingsSchema {
   realdebrid_client_id: string
   realdebrid_client_secret: string
   destination_folder: string
+  movies_folder: string
+  series_folder: string
   auto_remove_completed: boolean
   tmdb_api_key: string
 }
@@ -168,11 +170,11 @@ export function SettingsModal({ onClose, showToast }: Props) {
     }
   }
 
-  const handleSelectFolder = async () => {
+  const handleSelectFolder = async (field: 'destination_folder' | 'movies_folder' | 'series_folder') => {
     try {
       const res = await api<{ path: string; error?: string }>('/select-folder')
       if (res.error) showToast(res.error, 'error')
-      else if (res.path) setSettings((s) => s ? { ...s, destination_folder: res.path } : null)
+      else if (res.path) setSettings((s) => s ? { ...s, [field]: res.path } : null)
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : t.settings.folderError, 'error')
     }
@@ -424,7 +426,33 @@ export function SettingsModal({ onClose, showToast }: Props) {
                   placeholder={t.settings.selectFolder}
                   value={settings?.destination_folder || ''}
                 />
-                <button type="button" onClick={handleSelectFolder} className="btn border border-border text-text-main hover:border-accent">{t.settings.browse}</button>
+                <button type="button" onClick={() => handleSelectFolder('destination_folder')} className="btn border border-border text-text-main hover:border-accent">{t.settings.browse}</button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.moviesFolder}</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  className="input-field flex-1"
+                  placeholder={t.settings.selectFolder}
+                  value={settings?.movies_folder || ''}
+                  onChange={(e) => setSettings((s) => s ? { ...s, movies_folder: e.target.value } : null)}
+                />
+                <button type="button" onClick={() => handleSelectFolder('movies_folder')} className="btn border border-border text-text-main hover:border-accent">{t.settings.browse}</button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.seriesFolder}</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  className="input-field flex-1"
+                  placeholder={t.settings.selectFolder}
+                  value={settings?.series_folder || ''}
+                  onChange={(e) => setSettings((s) => s ? { ...s, series_folder: e.target.value } : null)}
+                />
+                <button type="button" onClick={() => handleSelectFolder('series_folder')} className="btn border border-border text-text-main hover:border-accent">{t.settings.browse}</button>
               </div>
             </div>
             <div className="flex items-center gap-3 mt-4">

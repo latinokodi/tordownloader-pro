@@ -7,8 +7,8 @@ const api = {
   searchMetaSearch: (query: string): Promise<any> => ipcRenderer.invoke('search-metasearch', query),
 
   getDownloads: (): Promise<any[]> => ipcRenderer.invoke('get-downloads'),
-  addMagnet: (magnet: string, service?: string): Promise<any> => ipcRenderer.invoke('add-magnet', magnet, service || 'torbox'),
-  addTorrentUrl: (url: string, service?: string): Promise<any> => ipcRenderer.invoke('add-torrent-url', url, service || 'torbox'),
+  addMagnet: (magnet: string, service?: string, type?: string, season?: number, episode?: number): Promise<any> => ipcRenderer.invoke('add-magnet', magnet, service || 'torbox', type || '', season ?? null, episode ?? null),
+  addTorrentUrl: (url: string, service?: string, type?: string, season?: number, episode?: number): Promise<any> => ipcRenderer.invoke('add-torrent-url', url, service || 'torbox', type || '', season ?? null, episode ?? null),
   controlTorrent: (torrentId: string, operation: string): Promise<any> => ipcRenderer.invoke('control-torrent', torrentId, operation),
   cancelDownload: (torrentId: string): Promise<any> => ipcRenderer.invoke('cancel-download', torrentId),
 
@@ -65,6 +65,9 @@ const api = {
   tmdbValidate: (apiKey: string): Promise<any> => ipcRenderer.invoke('tmdb-validate', apiKey),
   latinoSearch: (imdbId: string, mediaType: string, season?: string, episode?: string): Promise<any> =>
     ipcRenderer.invoke('latino-search', imdbId, mediaType, season, episode),
+  latinoSearchBatch: (imdbId: string, mediaType: string, season?: string, episode?: string): Promise<any> =>
+    ipcRenderer.invoke('latino-search-batch', imdbId, mediaType, season, episode),
+  searchBatch: (query: string): Promise<any> => ipcRenderer.invoke('search-batch', query),
   onLatinoSearchProgress: (callback: (progress: any) => void) => {
     ipcRenderer.on('latino-search-progress', (_e, progress) => callback(progress))
     return () => ipcRenderer.removeAllListeners('latino-search-progress')

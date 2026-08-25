@@ -3,6 +3,7 @@ dist/
 dist-electron/
 *.db
 .agent/
+.qwen/
 release/
 __pycache__/
 *.pyc

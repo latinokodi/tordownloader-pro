@@ -16,8 +16,8 @@ export async function api<T = unknown>(
   try {
     if (path.startsWith('/settings') && method === 'GET') return await ea.getSettings() as unknown as T
     if (path.startsWith('/settings') && method === 'POST') return await ea.setSettings(body as any) as unknown as T
-    if (path.startsWith('/downloads/add-torrent-url')) return await ea.addTorrentUrl(body!.url as string, body!.service as string) as unknown as T
-    if (path.startsWith('/downloads/add')) return await ea.addMagnet(body!.magnet as string, body!.service as string) as unknown as T
+    if (path.startsWith('/downloads/add-torrent-url')) return await ea.addTorrentUrl(body!.url as string, body!.service as string, body?.type as string, body?.season as number, body?.episode as number) as unknown as T
+    if (path.startsWith('/downloads/add')) return await ea.addMagnet(body!.magnet as string, body!.service as string, body?.type as string, body?.season as number, body?.episode as number) as unknown as T
     if (path.startsWith('/downloads') && method === 'GET') return await ea.getDownloads() as unknown as T
     if (path === '/downloads/clear-completed' && method === 'POST') return await ea.clearCompleted() as unknown as T
     if (path.startsWith('/downloads/') && method === 'DELETE') {

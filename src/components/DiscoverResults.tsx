@@ -13,6 +13,7 @@ async function handleDownload(
   onAdded: () => void,
   showToast: (msg: string, type?: 'success' | 'error') => void,
   service: string,
+  type: string = '',
 ) {
   const link = r.link
   const trErr = (msg: string) => {
@@ -26,6 +27,7 @@ async function handleDownload(
         magnet: link,
         info_hash: r.info_hash,
         service,
+        type,
       })
       if (res.success) { showToast('Descarga agregada', 'success'); onAdded() }
       else { showToast(`Error: ${trErr((res as any).detail || (res as any).error || 'Unknown')}`, 'error') }
@@ -37,7 +39,7 @@ async function handleDownload(
 
   if (link && link.endsWith('.torrent')) {
     try {
-      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service })
+      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service, type })
       if (res.success) { showToast('Descarga agregada', 'success'); onAdded() }
       else { showToast(`Error: ${trErr((res as any).detail || (res as any).error || 'Unknown')}`, 'error') }
     } catch (e: unknown) {
@@ -53,6 +55,7 @@ async function handleDownload(
         magnet,
         info_hash: r.info_hash,
         service,
+        type,
       })
       if (res.success) { showToast('Descarga agregada', 'success'); onAdded() }
       else { showToast(`Error: ${trErr((res as any).detail || (res as any).error || 'Unknown')}`, 'error') }
@@ -65,7 +68,7 @@ async function handleDownload(
   // Debrid direct URLs
   if (link && link.startsWith('http')) {
     try {
-      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service })
+      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service, type })
       if (res.success) { showToast('Descarga agregada', 'success'); onAdded() }
       else { showToast(`Error: ${trErr((res as any).detail || (res as any).error || 'Unknown')}`, 'error') }
     } catch (e: unknown) {
@@ -83,9 +86,10 @@ interface Props {
   service: string
   hasTorbox: boolean
   hasRealdebrid: boolean
+  mediaType: 'movie' | 'series'
 }
 
-export function DiscoverResults({ onDownloadAdded, showToast, service: defaultService, hasTorbox, hasRealdebrid }: Props) {
+export function DiscoverResults({ onDownloadAdded, showToast, service: defaultService, hasTorbox, hasRealdebrid, mediaType }: Props) {
   const { providerResults, providerLoading, currentProvider } = useDiscoverStore()
   const [downloadService, setDownloadService] = useState(defaultService || (hasTorbox ? 'torbox' : 'realdebrid'))
 
@@ -152,7 +156,7 @@ export function DiscoverResults({ onDownloadAdded, showToast, service: defaultSe
             )}
             <button
               className="btn btn-accent whitespace-nowrap"
-              onClick={() => handleDownload(r, onDownloadAdded, showToast, downloadService)}
+              onClick={() => handleDownload(r, onDownloadAdded, showToast, downloadService, mediaType)}
             >
               Descargar
             </button>

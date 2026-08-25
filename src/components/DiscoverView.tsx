@@ -3,6 +3,7 @@ import { useDiscoverStore, type TMDBItem, type TMDBLists, type EpisodeInfo } fro
 import { DiscoverThumbnails } from './DiscoverThumbnails'
 import { SeriesPicker } from './SeriesPicker'
 import { DiscoverResults } from './DiscoverResults'
+import { SeasonDownloadModal } from './SeasonDownloadModal'
 import { Compass, Search } from 'lucide-react'
 
 interface Props {
@@ -25,6 +26,7 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [sourceType, setSourceType] = useState<'tmdb' | 'catalog'>('tmdb')
   const [catalogVideos, setCatalogVideos] = useState<any[] | null>(null)
+  const [seasonModalOpen, setSeasonModalOpen] = useState(false)
   const {
     lists,
     listsLoading,
@@ -34,6 +36,7 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
     detailItem,
     detailLoading,
     selectedSeason,
+    episodes,
     hasKey,
     setLists,
     setListsError,
@@ -376,6 +379,16 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
           <SeriesPicker onSelect={handleEpisodeSelect} />
         )}
 
+        {/* Download whole season */}
+        {items.media_type === 'tv' && selectedSeason && episodes && episodes.length > 0 && (
+          <button
+            className="btn btn-accent w-full"
+            onClick={() => setSeasonModalOpen(true)}
+          >
+            ⬇ Descargar Temporada {selectedSeason.season_number}
+          </button>
+        )}
+
         {/* Results */}
         <DiscoverResults
           onDownloadAdded={onDownloadAdded}
@@ -383,7 +396,21 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
           service={service}
           hasTorbox={hasTorbox}
           hasRealdebrid={hasRealdebrid}
+          mediaType={items.media_type === 'tv' ? 'series' : 'movie'}
         />
+
+        {seasonModalOpen && selectedSeason && (
+          <SeasonDownloadModal
+            seriesTitle={items.title}
+            imdbId={items.imdb_id || ''}
+            season={selectedSeason.season_number}
+            episodes={episodes || []}
+            service={service}
+            onClose={() => setSeasonModalOpen(false)}
+            onDownloadAdded={onDownloadAdded}
+            showToast={showToast}
+          />
+        )}
       </div>
     )
   }

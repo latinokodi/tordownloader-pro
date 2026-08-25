@@ -36,6 +36,8 @@ jobs:
           rm -rf build tmdb-provider.spec
           pyinstaller --onefile --name latino-providers --distpath . --clean latino-providers.py
           rm -rf build latino-providers.spec
+          pyinstaller --onefile --name subtitles --distpath . --clean subtitles.py
+          rm -rf build subtitles.spec
         shell: bash
 
       - name: Install npm deps

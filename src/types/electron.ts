@@ -4,6 +4,8 @@ export interface AppSettings {
   realdebrid_token?: string
   tmdb_api_key?: string
   destination_folder?: string
+  movies_folder?: string
+  series_folder?: string
 }
 
 // ── API responses ──
@@ -28,6 +30,9 @@ export interface Download {
   local_eta?: string
   local_path?: string
   service?: string
+  type?: 'movie' | 'series' | ''
+  season?: number | null
+  episode?: number | null
 }
 
 // ── Search ──
@@ -108,8 +113,8 @@ export interface ElectronAPI {
 
   searchMetaSearch: (query: string) => Promise<any>
   getDownloads: () => Promise<Download[]>
-  addMagnet: (magnet: string, service?: string) => Promise<ApiResult>
-  addTorrentUrl: (url: string, service?: string) => Promise<ApiResult>
+  addMagnet: (magnet: string, service?: string, type?: string, season?: number, episode?: number) => Promise<ApiResult>
+  addTorrentUrl: (url: string, service?: string, type?: string, season?: number, episode?: number) => Promise<ApiResult>
   controlTorrent: (torrentId: string, operation: string) => Promise<ApiResult>
   cancelDownload: (torrentId: string) => Promise<ApiResult>
 
@@ -150,6 +155,8 @@ export interface ElectronAPI {
   tmdbValidate: (apiKey: string) => Promise<{ success: boolean; error?: string }>
 
   latinoSearch: (imdbId: string, mediaType: string, season?: string, episode?: string) => Promise<LatinoResult[]>
+  latinoSearchBatch: (imdbId: string, mediaType: string, season?: string, episode?: string) => Promise<{ success: boolean; data: any[] }>
+  searchBatch: (query: string) => Promise<{ success: boolean; data: any[] }>
   onLatinoSearchProgress: (callback: (progress: any) => void) => () => void
 
   catalogManifest: () => Promise<CatalogManifest>

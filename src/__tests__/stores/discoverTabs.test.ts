@@ -78,15 +78,15 @@ describe('discoverStore', () => {
   })
 
   describe('appendProviderResults', () => {
-    it('adds results sorted by seeders descending', () => {
+    it('orders latino providers first (Cinecalidad → TCL → Comet), others last', () => {
       useDiscoverStore.getState().appendProviderResults([
-        makeResult({ seeders: 10 }),
-        makeResult({ info_hash: 'def', seeders: 50 }),
+        makeResult({ indexer: 'Comet', info_hash: 'c' }),
+        makeResult({ indexer: 'TCL', info_hash: 't' }),
+        makeResult({ indexer: 'CC', info_hash: 'cc' }),
+        makeResult({ indexer: 'other', info_hash: 'o' }),
       ])
       const state = useDiscoverStore.getState()
-      expect(state.providerResults).toHaveLength(2)
-      expect(state.providerResults![0].seeders).toBe(50)
-      expect(state.providerResults![1].seeders).toBe(10)
+      expect(state.providerResults!.map((r) => r.indexer)).toEqual(['CC', 'TCL', 'Comet', 'other'])
     })
 
     it('deduplicates by info_hash keeping highest seeders', () => {

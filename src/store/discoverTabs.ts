@@ -91,6 +91,9 @@ interface DiscoverState {
   reset: () => void
 }
 
+// Latino-first ordering: Cinecalidad (CC) → TCL → Comet, stable within provider.
+const LATINO_PRIORITY: Record<string, number> = { CC: 0, TCL: 1, Comet: 2 }
+
 export const useDiscoverStore = create<DiscoverState>((set, get) => ({
   lists: null,
   listsLoading: false,
@@ -139,7 +142,13 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
         seen.set(key, r)
       }
     }
-    set({ providerResults: [...seen.values()].sort((a, b) => b.seeders - a.seeders) })
+    set({
+      providerResults: [...seen.values()].sort((a, b) => {
+        const pa = LATINO_PRIORITY[a.indexer] ?? 99
+        const pb = LATINO_PRIORITY[b.indexer] ?? 99
+        return pa - pb
+      })
+    })
   },
 
   setCurrentProvider: (provider) => set({ currentProvider: provider }),

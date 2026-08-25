@@ -178,7 +178,7 @@ ipcMain.handle('search-metasearch', async (e, query: string) => {
 
 ipcMain.handle('get-downloads', () => getDownloads());
 
-ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbox') => {
+ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbox', type: string = '', season: number | null = null, episode: number | null = null) => {
   const settings = getSettings();
 
   if (service === 'realdebrid') {
@@ -194,7 +194,7 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
         if (id) {
           const existing = getDownloadByTorboxId(id);
           if (existing) {
-            updateDownload(id, { local_status: 'pending', service: 'realdebrid' });
+            updateDownload(id, { local_status: 'pending', service: 'realdebrid', type: type as any, season, episode });
           } else {
             addDownload({
               torbox_id: id,
@@ -202,6 +202,9 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
               status: 'waiting_files_selection',
               progress: 0,
               service: 'realdebrid',
+              type: type as any,
+              season,
+              episode,
             });
           }
           if (mainWindow) mainWindow.webContents.send('downloads-updated');
@@ -227,7 +230,7 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
       if (id) {
         const existing = getDownloadByTorboxId(id);
         if (existing) {
-          updateDownload(id, { local_status: 'pending', service: 'torbox' });
+          updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any, season, episode });
         } else {
           addDownload({
             torbox_id: id,
@@ -235,6 +238,9 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
             status: 'pending',
             progress: 0,
             service: 'torbox',
+            type: type as any,
+            season,
+            episode,
           });
         }
         if (mainWindow) mainWindow.webContents.send('downloads-updated');
@@ -246,7 +252,7 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
   }
 });
 
-ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string = 'torbox') => {
+ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string = 'torbox', type: string = '', season: number | null = null, episode: number | null = null) => {
   const settings = getSettings();
 
   if (service === 'realdebrid') {
@@ -262,7 +268,7 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
         if (id) {
           const existing = getDownloadByTorboxId(id);
           if (existing) {
-            updateDownload(id, { local_status: 'pending', service: 'realdebrid' });
+            updateDownload(id, { local_status: 'pending', service: 'realdebrid', type: type as any, season, episode });
           } else {
             addDownload({
               torbox_id: id,
@@ -270,6 +276,9 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
               status: 'waiting_files_selection',
               progress: 0,
               service: 'realdebrid',
+              type: type as any,
+              season,
+              episode,
             });
           }
           if (mainWindow) mainWindow.webContents.send('downloads-updated');
@@ -295,7 +304,7 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
       if (id) {
         const existing = getDownloadByTorboxId(id);
         if (existing) {
-          updateDownload(id, { local_status: 'pending', service: 'torbox' });
+          updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any, season, episode });
         } else {
           addDownload({
             torbox_id: id,
@@ -303,6 +312,9 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
             status: 'pending',
             progress: 0,
             service: 'torbox',
+            type: type as any,
+            season,
+            episode,
           });
         }
         if (mainWindow) mainWindow.webContents.send('downloads-updated');
@@ -338,29 +350,23 @@ ipcMain.handle('cancel-download', async (_e, torrentId: string) => {
   const settings = getSettings();
   const download = getDownloadByTorboxId(torrentId);
 
-  // 1) Abort any running local download
+  // 1) Abort any running local download (synchronous, instant)
   cancelLocalDownload(torrentId);
 
-  // 2) Delete from the appropriate service
-  if (download?.service === 'realdebrid' && settings.realdebrid_token) {
-    try {
-      const rd = new RealDebridAPI(settings.realdebrid_token);
-      await rd.deleteTorrent(torrentId);
-    } catch (err) {
-      console.warn(`RD delete for ${torrentId} failed:`, err);
-    }
-  } else if (settings.torbox_token) {
-    try {
-      const tb = new TorboxAPI(settings.torbox_token);
-      await tb.controlTorrent(torrentId, 'Delete');
-    } catch (err) {
-      console.warn(`TorBox delete for ${torrentId} failed:`, err);
-    }
-  }
-
-  // 3) Remove from local DB
+  // 2) Remove from local DB + notify the UI immediately. Do NOT await the
+  // cloud delete first — that axios call can block up to 30s, which made the
+  // stop button feel dead and invite repeated clicks.
   deleteDownload(torrentId);
   if (mainWindow) mainWindow.webContents.send('downloads-updated');
+
+  // 3) Fire-and-forget cloud delete so the torrent doesn't linger on the debrid.
+  if (download?.service === 'realdebrid' && settings.realdebrid_token) {
+    new RealDebridAPI(settings.realdebrid_token).deleteTorrent(torrentId).catch((err) =>
+      console.warn(`RD delete for ${torrentId} failed:`, err));
+  } else if (settings.torbox_token) {
+    new TorboxAPI(settings.torbox_token).controlTorrent(torrentId, 'Delete').catch((err) =>
+      console.warn(`TorBox delete for ${torrentId} failed:`, err));
+  }
 
   return { success: true };
 });
@@ -862,6 +868,44 @@ ipcMain.handle('latino-search', async (e, imdbId: string, mediaType: string, sea
       resolve()
     })
   })
+})
+
+// ── Batch resolvers (season download) ───────────────────
+// Same sources as the streaming paths, but return a plain JSON array
+// synchronously so the season-download review can resolve N episodes fast.
+
+ipcMain.handle('latino-search-batch', async (_e, imdbId: string, mediaType: string, season?: string, episode?: string) => {
+  const args = [imdbId, mediaType]
+  if (season) args.push(season)
+  if (episode) args.push(episode)
+
+  return new Promise((resolve) => {
+    const { cmd, allArgs } = spawnPython('latino-providers.py', args)
+    const proc = spawn(cmd, allArgs, { windowsHide: true, timeout: 45_000, env: { ...process.env } })
+    let stdout = ''
+    let stderr = ''
+    proc.stdout?.on('data', (c: Buffer) => (stdout += c.toString('utf-8')))
+    proc.stderr?.on('data', (c: Buffer) => (stderr += c.toString('utf-8')))
+    proc.on('close', () => {
+      try {
+        const data = JSON.parse(stdout)
+        resolve({ success: true, data: Array.isArray(data) ? data : [] })
+      } catch {
+        resolve({ success: false, error: stderr.slice(0, 300) || 'Failed to parse latino results', data: [] })
+      }
+    })
+    proc.on('error', (err) => resolve({ success: false, error: err.message, data: [] }))
+  })
+})
+
+ipcMain.handle('search-batch', async (_e, query: string) => {
+  try {
+    const ms = getMetaSearch()
+    const results = await ms.search(query)
+    return { success: true, data: results }
+  } catch (err: any) {
+    return { success: false, error: err.message, data: [] }
+  }
 })
 
 // ── Stremio Catalog Addon ──────────────────────
