@@ -7,8 +7,15 @@ const api = {
   searchMetaSearch: (query: string): Promise<any> => ipcRenderer.invoke('search-metasearch', query),
 
   getDownloads: (): Promise<any[]> => ipcRenderer.invoke('get-downloads'),
+  getDownloadedEpisodes: (title: string, season: number): Promise<{ episodes: number[]; queued: number[] }> =>
+    ipcRenderer.invoke('get-downloaded-episodes', title, season),
+  getSeasonCache: (imdbId: string, season: number): Promise<{ found: boolean; episodes: Record<string, unknown[]> }> =>
+    ipcRenderer.invoke('get-season-cache', imdbId, season),
+  saveSeasonCache: (imdbId: string, season: number, episodes: Record<string, unknown[]>): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('save-season-cache', imdbId, season, episodes),
   addMagnet: (magnet: string, service?: string, type?: string, season?: number, episode?: number): Promise<any> => ipcRenderer.invoke('add-magnet', magnet, service || 'torbox', type || '', season ?? null, episode ?? null),
   addTorrentUrl: (url: string, service?: string, type?: string, season?: number, episode?: number): Promise<any> => ipcRenderer.invoke('add-torrent-url', url, service || 'torbox', type || '', season ?? null, episode ?? null),
+  torboxHasHash: (hash: string): Promise<{ has: boolean; error?: string }> => ipcRenderer.invoke('torbox-has-hash', hash),
   controlTorrent: (torrentId: string, operation: string): Promise<any> => ipcRenderer.invoke('control-torrent', torrentId, operation),
   cancelDownload: (torrentId: string): Promise<any> => ipcRenderer.invoke('cancel-download', torrentId),
 

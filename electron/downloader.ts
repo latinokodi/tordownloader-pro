@@ -41,6 +41,14 @@ export interface DownloadProgress {
   total_bytes: number;
 }
 
+export interface DownloadResult {
+  success: boolean;
+  error?: string;
+  bytes_downloaded: number;
+  /** True when a resume was requested but the server ignored the Range header (200). */
+  rangeIgnored?: boolean;
+}
+
 export class Downloader {
   private cancelSource: CancelTokenSource | null = null;
 
@@ -67,26 +75,57 @@ export class Downloader {
     }
   }
 
-  async start(onProgress?: (p: DownloadProgress) => void): Promise<{ success: boolean; error?: string; bytes_downloaded: number }> {
+  async start(onProgress?: (p: DownloadProgress) => void): Promise<DownloadResult> {
     this.cancelSource = axios.CancelToken.source();
 
     return new Promise(async (resolve) => {
+      // Resume support: if a partial file already exists (e.g. a CDN stream was
+      // cut at ~97%), continue from where it stopped with an HTTP Range request
+      // instead of re-downloading from scratch.
+      let startOffset = 0;
+      if (this.expectedSize > 0 && fs.existsSync(this.destPath)) {
+        try {
+          const cur = fs.statSync(this.destPath).size;
+          if (cur >= this.expectedSize) {
+            this.cancelSource = null;
+            resolve({ success: true, bytes_downloaded: cur });
+            return;
+          }
+          if (cur > 0) startOffset = cur;
+        } catch { /* stat failed → start over */ }
+      }
+
       try {
+        const headers: Record<string, string> = {};
+        if (startOffset > 0) headers['Range'] = `bytes=${startOffset}-`;
+
         const response = await axios({
           method: 'GET',
           url: this.url,
           responseType: 'stream',
           timeout: 60000,
           cancelToken: this.cancelSource!.token,
+          headers,
         });
 
-        const totalLength = parseInt(String(response.headers['content-length']) || '0', 10) || this.expectedSize;
-        let bytesDownloaded = 0;
+        // Server ignored the Range header (200 OK) → resume is impossible.
+        // Do NOT truncate or overwrite the existing partial; report it so the
+        // caller can accept the file instead of re-downloading it from scratch.
+        if (startOffset > 0 && response.status !== 206) {
+          try { response.data.destroy(); } catch { /* ignore */ }
+          this.cancelSource = null;
+          resolve({ success: false, error: 'Range not supported by CDN', bytes_downloaded: startOffset, rangeIgnored: true });
+          return;
+        }
+
+        const effectiveOffset = startOffset > 0 ? startOffset : 0;
+        const totalLength = this.expectedSize || parseInt(String(response.headers['content-length']) || '0', 10) || 0;
+        let bytesDownloaded = effectiveOffset;
         let lastUpdate = Date.now();
-        let lastBytes = 0;
+        let lastBytes = bytesDownloaded;
         let speed = 0;
 
-        const writer = fs.createWriteStream(this.destPath);
+        const writer = fs.createWriteStream(this.destPath, effectiveOffset > 0 ? { flags: 'a' } : {});
 
         response.data.on('data', (chunk: Buffer) => {
           bytesDownloaded += chunk.length;
@@ -98,7 +137,7 @@ export class Downloader {
             lastBytes = bytesDownloaded;
 
             if (onProgress) {
-              const progress_percent = totalLength ? (bytesDownloaded / totalLength) * 100 : 0;
+              const progress_percent = totalLength ? Math.min(100, (bytesDownloaded / totalLength) * 100) : 0;
               onProgress({
                 bytes_done: bytesDownloaded,
                 progress_percent,
@@ -114,23 +153,39 @@ export class Downloader {
         writer.on('finish', () => {
           writer.close();
           this.cancelSource = null;
-          resolve({ success: true, bytes_downloaded: bytesDownloaded });
+          // A stream that ended without delivering the expected size is a
+          // FAILURE, not a success — e.g. a dead/expired CDN link returns an
+          // empty body (0 bytes) which must not be treated as "partial".
+          // The partial file is kept so a retry can resume it.
+          if (this.expectedSize > 0 && bytesDownloaded < this.expectedSize) {
+            resolve({
+              success: false,
+              error: `Truncated download: got ${bytesDownloaded} of ${this.expectedSize} bytes`,
+              bytes_downloaded: bytesDownloaded,
+            });
+          } else {
+            resolve({ success: true, bytes_downloaded: bytesDownloaded });
+          }
         });
 
         writer.on('error', (err) => {
-          fs.unlink(this.destPath, () => {});
+          // Keep the partial file so a retry can resume it.
           this.cancelSource = null;
-          resolve({ success: false, error: err.message, bytes_downloaded: 0 });
+          resolve({ success: false, error: err.message, bytes_downloaded: bytesDownloaded });
         });
       } catch (err: any) {
-        // Clean up partial file on cancellation
-        try { fs.unlinkSync(this.destPath); } catch (_) {}
+        // Keep the partial file for resume.
         this.cancelSource = null;
 
         if (axios.isCancel(err)) {
-          resolve({ success: false, error: 'Cancelled', bytes_downloaded: 0 });
+          resolve({ success: false, error: 'Cancelled', bytes_downloaded: startOffset });
+        } else if ((err as any)?.response?.status === 416 && startOffset > 0) {
+          // Range beyond EOF → the partial file is actually complete.
+          let sz = startOffset;
+          try { sz = fs.statSync(this.destPath).size; } catch { /* ignore */ }
+          resolve({ success: true, bytes_downloaded: sz });
         } else {
-          resolve({ success: false, error: err.message, bytes_downloaded: 0 });
+          resolve({ success: false, error: err.message, bytes_downloaded: startOffset });
         }
       }
     });

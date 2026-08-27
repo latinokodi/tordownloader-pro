@@ -113,8 +113,12 @@ export interface ElectronAPI {
 
   searchMetaSearch: (query: string) => Promise<any>
   getDownloads: () => Promise<Download[]>
+  getDownloadedEpisodes: (title: string, season: number) => Promise<{ episodes: number[]; queued: number[] }>
+  getSeasonCache: (imdbId: string, season: number) => Promise<{ found: boolean; episodes: Record<string, unknown[]> }>
+  saveSeasonCache: (imdbId: string, season: number, episodes: Record<string, unknown[]>) => Promise<{ success: boolean }>
   addMagnet: (magnet: string, service?: string, type?: string, season?: number, episode?: number) => Promise<ApiResult>
   addTorrentUrl: (url: string, service?: string, type?: string, season?: number, episode?: number) => Promise<ApiResult>
+  torboxHasHash: (hash: string) => Promise<{ has: boolean; error?: string }>
   controlTorrent: (torrentId: string, operation: string) => Promise<ApiResult>
   cancelDownload: (torrentId: string) => Promise<ApiResult>
 

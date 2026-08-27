@@ -9,8 +9,50 @@ import { spawn } from 'child_process';
 import { BrowserWindow, app } from 'electron';
 
 let workerInterval: NodeJS.Timeout | null = null;
+let workerMainWindow: BrowserWindow | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
 const activeDownloaders = new Map<string, Downloader>();
+
+// ── Local download concurrency ──────────────────────────
+// All season transfers are added to the list, but only MAX_CONCURRENT_DOWNLOADS
+// local downloads run at once; the rest wait in localDownloadQueue (FIFO) and
+// are dispatched as slots free up.
+const MAX_CONCURRENT_DOWNLOADS = 3;
+interface QueuedDownload {
+  tid: string;
+  dlData: any;
+  service: 'torbox' | 'realdebrid';
+}
+const localDownloadQueue: QueuedDownload[] = [];
+
+function enqueueLocalDownload(tid: string, dlData: any, service: 'torbox' | 'realdebrid') {
+  if (activeLocalDownloads.has(tid)) return;
+  if (localDownloadQueue.some((q) => q.tid === tid)) return;
+  localDownloadQueue.push({ tid, dlData, service });
+  dispatchNextLocalDownload();
+}
+
+function dispatchNextLocalDownload() {
+  while (activeLocalDownloads.size < MAX_CONCURRENT_DOWNLOADS && localDownloadQueue.length > 0) {
+    const item = localDownloadQueue.shift()!;
+    if (activeLocalDownloads.has(item.tid)) continue;
+    activeLocalDownloads.set(item.tid, true);
+
+    const settings = getSettings();
+    const mainWindow = workerMainWindow;
+    const run = item.service === 'realdebrid' ? runRealdebridDownload : runTorboxDownload;
+    const token = item.service === 'realdebrid' ? settings.realdebrid_token : settings.torbox_token;
+
+    run(item.tid, item.dlData, settings, token, mainWindow).catch((err) => {
+      console.error(`Local download failed for ${item.tid}:`, err);
+      const rec = getDownloadByTorboxId(item.tid);
+      if (rec) updateDownload(item.tid, { local_status: `failed: ${err.message}` });
+      activeLocalDownloads.delete(item.tid);
+      dispatchNextLocalDownload();
+      if (mainWindow) mainWindow.webContents.send('downloads-updated');
+    });
+  }
+}
 
 /** Cancel an in-progress local download by its TorBox ID. Returns true if something was aborted. */
 export function cancelLocalDownload(tid: string): boolean {
@@ -19,11 +61,20 @@ export function cancelLocalDownload(tid: string): boolean {
     dl.abort();
     activeDownloaders.delete(tid);
     activeLocalDownloads.delete(tid);
+    dispatchNextLocalDownload();
+    return true;
+  }
+  // Remove from the waiting queue if not started yet
+  const queuedIdx = localDownloadQueue.findIndex((q) => q.tid === tid);
+  if (queuedIdx !== -1) {
+    localDownloadQueue.splice(queuedIdx, 1);
+    activeLocalDownloads.delete(tid);
     return true;
   }
   // Mark as cancelled even if Downloader not created yet (queued)
   if (activeLocalDownloads.has(tid)) {
     activeLocalDownloads.delete(tid);
+    dispatchNextLocalDownload();
     return true;
   }
   return false;
@@ -71,6 +122,7 @@ function safeMkdirSync(dirPath: string) {
 
 export function startWorker(mainWindow: BrowserWindow | null) {
   if (workerInterval) clearInterval(workerInterval)
+  workerMainWindow = mainWindow
   console.log('[Worker] Starting background worker (10s interval)')
 
   // ── Resume interrupted downloads on startup ──────────
@@ -144,16 +196,10 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
       const completedStates = ['completed', 'cached', 'finished'];
 
       if (completedStates.includes(state.toLowerCase()) && ['pending', 'queued'].includes(record.local_status)) {
-        if (!activeLocalDownloads.has(tid)) {
-          console.log(`[Worker] Queued TorBox download: ${name} (${tid})`)
+        if (!activeLocalDownloads.has(tid) && !localDownloadQueue.some((q) => q.tid === tid)) {
+          console.log(`[Worker] Queued TorBox download: ${name} (${tid}) — ${activeLocalDownloads.size}/${MAX_CONCURRENT_DOWNLOADS} active`)
           updateDownload(tid, { local_status: 'queued' });
-          activeLocalDownloads.set(tid, true);
-          runTorboxDownload(tid, dlData, settings, settings.torbox_token, mainWindow).catch(err => {
-            console.error(`Local download failed for ${tid}:`, err);
-            updateDownload(tid, { local_status: `failed: ${err.message}` });
-            activeLocalDownloads.delete(tid);
-            if (mainWindow) mainWindow.webContents.send('downloads-updated');
-          });
+          enqueueLocalDownload(tid, dlData, 'torbox');
         }
       }
 
@@ -236,16 +282,10 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
       const completedStates = ['downloaded', 'finished'];
 
       if (completedStates.includes(effectiveState) && ['pending', 'queued'].includes(record.local_status)) {
-        if (!activeLocalDownloads.has(tid)) {
-          console.log(`[Worker] Queued RD download: ${name} (${tid})`)
+        if (!activeLocalDownloads.has(tid) && !localDownloadQueue.some((q) => q.tid === tid)) {
+          console.log(`[Worker] Queued RD download: ${name} (${tid}) — ${activeLocalDownloads.size}/${MAX_CONCURRENT_DOWNLOADS} active`)
           updateDownload(tid, { local_status: 'queued' });
-          activeLocalDownloads.set(tid, true);
-          runRealdebridDownload(tid, dlData, settings, settings.realdebrid_token, mainWindow).catch(err => {
-            console.error(`RD download failed for ${tid}:`, err);
-            updateDownload(tid, { local_status: `failed: ${err.message}` });
-            activeLocalDownloads.delete(tid);
-            if (mainWindow) mainWindow.webContents.send('downloads-updated');
-          });
+          enqueueLocalDownload(tid, dlData, 'realdebrid');
         }
       }
 
@@ -260,9 +300,11 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
 // ── Destination resolution ─────────────────────────────
 // Only media downloads (type explicitly movie/series) get the Jellyfin
 // radarr/sonarr layout. Everything else keeps the flat destination folder.
-async function resolveDestination(settings: any, name: string, type: 'movie' | 'series' | ''): Promise<string> {
+// `season` (from the DB record) is passed through so every episode of a
+// season resolves into the same "Season NN" folder regardless of release name.
+async function resolveDestination(settings: any, name: string, type: 'movie' | 'series' | '', season?: number | null): Promise<string> {
   if (type === 'movie' || type === 'series') {
-    const { root, folder } = await computeDestination(settings, name, type);
+    const { root, folder } = await computeDestination(settings, name, type, season);
     if (!root) throw new Error('Destination folder is not configured');
     return path.join(root, ...folder.split('/').map(safeSegment));
   }
@@ -276,7 +318,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
   try {
     const rec = getDownloadByTorboxId(tid);
     const type: 'movie' | 'series' | '' = rec?.type || '';
-    const destFolder = await resolveDestination(settings, dlData.name || tid, type);
+    const destFolder = await resolveDestination(settings, dlData.name || tid, type, rec?.season ?? undefined);
 
     const tb = new TorboxAPI(token);
     safeMkdirSync(destFolder);
@@ -302,91 +344,145 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
 
     const totalBytes = files.reduce((acc: number, f: any) => acc + getFileSize(f), 0);
     let completedBytes = 0;
+    // Files this transfer downloaded (raw names) — used to rename/subtitle ONLY
+    // its own files, never touching other transfers' in-flight files.
+    const downloadedFiles: string[] = [];
 
     for (let idx = 0; idx < files.length; idx++) {
       const fileInfo = files[idx];
       const fileId = fileInfo.id;
       const fileName = fileInfo.name || fileInfo.path || `file_${idx}`;
-      const safeRelPath = getSafeRelativePath(fileName, `file_${idx}`);
+      // Media downloads land in a pre-computed layout folder
+      // (<Title (Year)>/Season NN); flatten the torrent's internal folder
+      // structure so every episode file sits directly in the season folder
+      // (no per-episode / nested subfolders). Non-media keeps its structure.
+      const safeRelPath = type === 'movie' || type === 'series'
+        ? getSafePathPart(fileName.split(/[/\\]+/).pop() || `file_${idx}`)
+        : getSafeRelativePath(fileName, `file_${idx}`);
       const filePath = path.join(destFolder, safeRelPath);
       const expectedSize = getFileSize(fileInfo);
 
       // Ensure subdirectory exists
       safeMkdirSync(path.dirname(filePath));
 
-      // TorBox requestdl is metered and can transiently fail (CDN link not ready,
-      // throttle, timed out). Retry before giving up, and surface the REAL error.
-      let linkRes: any = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        linkRes = await tb.getDownloadLink(tid, String(fileId));
-        if (linkRes && linkRes.success && linkRes.data) break;
-        const reason = linkRes ? (linkRes.error || linkRes.detail || 'no data') : 'no response';
-        console.warn(`[Worker] TorBox requestdl failed for ${fileName} (attempt ${attempt}/3):`, reason);
-        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
-      }
-      if (!linkRes || !linkRes.success || !linkRes.data) {
-        const reason = linkRes ? (linkRes.error || linkRes.detail || 'no data') : 'no response';
-        throw new Error(`TorBox did not return a download link for ${fileName}: ${reason}`);
+      // TorBox requestdl is metered and CDN links can expire or cut the stream
+      // short (~97%). Download with retries: a fresh link per attempt and the
+      // Downloader resumes the partial file (Range), so a truncated transfer
+      // continues instead of failing the whole episode.
+      let verified = false;
+      for (let attempt = 1; attempt <= 3 && !verified; attempt++) {
+        let linkRes: any = null;
+        for (let l = 1; l <= 3; l++) {
+          linkRes = await tb.getDownloadLink(tid, String(fileId));
+          if (linkRes && linkRes.success && linkRes.data) break;
+          const reason = linkRes ? (linkRes.error || linkRes.detail || 'no data') : 'no response';
+          console.warn(`[Worker] TorBox requestdl failed for ${fileName} (attempt ${l}/3):`, reason);
+          if (l < 3) await new Promise((r) => setTimeout(r, l * 2000));
+        }
+        if (!linkRes || !linkRes.success || !linkRes.data) {
+          if (attempt < 3) { await new Promise((r) => setTimeout(r, attempt * 2000)); continue; }
+          const reason = linkRes ? (linkRes.error || linkRes.detail || 'no data') : 'no response';
+          throw new Error(`TorBox did not return a download link for ${fileName}: ${reason}`);
+        }
+
+        const downloadUrl = linkRes.data;
+
+        // HARD GUARD: verify the URL is from a recognized debrid CDN.
+        if (!isDebridCDN(downloadUrl)) {
+          throw new Error(
+            `Security: Download URL ${downloadUrl} is not from a recognized debrid CDN.`
+          );
+        }
+
+        const downloader = new Downloader(downloadUrl, filePath, expectedSize);
+        activeDownloaders.set(tid, downloader);
+
+        // Keep the progress bar continuous across retries: base it on the bytes
+        // already on disk (the resume offset) instead of resetting to 0.
+        const partialBytes = expectedSize > 0 && fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+        updateDownload(tid, {
+          local_status: `Downloading ${idx + 1}/${totalFiles}${attempt > 1 ? ` (intento ${attempt})` : ''}...`,
+          local_progress: expectedSize > 0 ? Math.floor((partialBytes / expectedSize) * 100) : Math.floor((idx / totalFiles) * 100),
+          local_path: destFolder,
+        });
+        if (mainWindow) mainWindow.webContents.send('downloads-updated');
+
+        let lastUpdate = 0;
+        const onProg = (p: DownloadProgress) => {
+          const now = Date.now();
+          if (now - lastUpdate > 2000) {
+            lastUpdate = now;
+            let overall = 0;
+            if (totalBytes > 0) {
+              overall = Math.floor(((completedBytes + p.bytes_done) / totalBytes) * 100);
+            } else {
+              overall = Math.floor(((idx / totalFiles) * 100) + (p.progress_percent / totalFiles));
+            }
+
+            const remaining = totalBytes > 0 ? totalBytes - (completedBytes + p.bytes_done) : 0;
+            const eta = formatETA(remaining, p.speed);
+
+            updateDownload(tid, {
+              local_status: `Downloading ${idx + 1}/${totalFiles} (${Math.floor(p.progress_percent)}%)`,
+              local_progress: Math.max(0, Math.min(99, overall)),
+              local_speed: Math.floor(p.speed),
+              local_eta: eta,
+              local_path: destFolder,
+            });
+            if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          }
+        };
+
+        const result = await downloader.start(onProg);
+        if (!result.success) {
+          if (result.rangeIgnored) {
+            // The CDN doesn't support resume — the file on disk is all it gives.
+            const sz = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+            if (sz > 0) {
+              console.warn(`[Worker] ${fileName}: CDN ignores resume — accepting existing file (${sz} bytes)`);
+              verified = true;
+              continue;
+            }
+          }
+          if (attempt < 3) {
+            console.warn(`[Worker] Download ${fileName} failed (${result.error}), retry ${attempt + 1}/3`);
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+            continue;
+          }
+          throw new Error(`Failed to download ${fileName}: ${result.error}`);
+        }
+
+        if (expectedSize > 0) {
+          const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+          if (actualSize === expectedSize) {
+            verified = true;
+          } else if (actualSize > 0 && attempt >= 2) {
+            // Real file on disk but the debrid metadata size is off / the CDN
+            // stopped delivering more bytes — accept it instead of re-downloading.
+            console.warn(`[Worker] ${fileName}: size ${actualSize} vs expected ${expectedSize} — accepting file`);
+            verified = true;
+          } else {
+            console.warn(`[Worker] ${fileName} partial (${actualSize}/${expectedSize} bytes), resuming on retry ${attempt + 1}/3`);
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+          }
+        } else {
+          verified = true;
+        }
       }
 
-      const downloadUrl = linkRes.data;
-
-      // HARD GUARD: verify the URL is from a recognized debrid CDN.
-      if (!isDebridCDN(downloadUrl)) {
+      if (verified) {
+        completedBytes += expectedSize || (fs.existsSync(filePath) ? fs.statSync(filePath).size : 0);
+        downloadedFiles.push(safeRelPath);
+      } else {
+        // All attempts failed (dead link, repeated truncation, 0 bytes) — fail
+        // the transfer instead of silently continuing with an empty file.
+        const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
         throw new Error(
-          `Security: Download URL ${downloadUrl} is not from a recognized debrid CDN.`
+          actualSize > 0
+            ? `Failed to verify ${fileName}: expected ${expectedSize} bytes, got ${actualSize}`
+            : `Download failed for ${fileName}: no data received (${expectedSize} bytes expected)`
         );
       }
-
-      const downloader = new Downloader(downloadUrl, filePath, expectedSize);
-      activeDownloaders.set(tid, downloader);
-
-      updateDownload(tid, {
-        local_status: `Downloading ${idx + 1}/${totalFiles}...`,
-        local_progress: Math.floor((idx / totalFiles) * 100),
-        local_path: destFolder,
-      });
-      if (mainWindow) mainWindow.webContents.send('downloads-updated');
-
-      let lastUpdate = 0;
-      const onProg = (p: DownloadProgress) => {
-        const now = Date.now();
-        if (now - lastUpdate > 2000) {
-          lastUpdate = now;
-          let overall = 0;
-          if (totalBytes > 0) {
-            overall = Math.floor(((completedBytes + p.bytes_done) / totalBytes) * 100);
-          } else {
-            overall = Math.floor(((idx / totalFiles) * 100) + (p.progress_percent / totalFiles));
-          }
-
-          const remaining = totalBytes > 0 ? totalBytes - (completedBytes + p.bytes_done) : 0;
-          const eta = formatETA(remaining, p.speed);
-
-          updateDownload(tid, {
-            local_status: `Downloading ${idx + 1}/${totalFiles} (${Math.floor(p.progress_percent)}%)`,
-            local_progress: Math.max(0, Math.min(99, overall)),
-            local_speed: Math.floor(p.speed),
-            local_eta: eta,
-            local_path: destFolder,
-          });
-          if (mainWindow) mainWindow.webContents.send('downloads-updated');
-        }
-      };
-
-      const result = await downloader.start(onProg);
-      if (!result.success) {
-        throw new Error(`Failed to download ${fileName}: ${result.error}`);
-      }
-
-      if (expectedSize > 0) {
-        const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
-        if (actualSize !== expectedSize) {
-          throw new Error(`Failed to verify ${fileName}: expected ${expectedSize} bytes, got ${actualSize}`);
-        }
-      }
-
-      completedBytes += expectedSize || result.bytes_downloaded;
     }
 
     updateDownload(tid, {
@@ -396,11 +492,13 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
       local_path: destFolder,
     });
     console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
-    if (type === 'series') {
-      renameForJellyfin(dlData.name || tid, rec, destFolder);
-    }
+    // Subtitles FIRST (raw filenames still on disk, ownFiles match), then rename
+    // the video AND its subtitle sidecars to the Jellyfin names.
     if (type === 'movie' || type === 'series') {
-      await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder);
+      await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder, downloadedFiles);
+    }
+    if (type === 'series') {
+      renameForJellyfin(dlData.name || tid, rec, destFolder, downloadedFiles);
     }
     
   } catch (err: any) {
@@ -411,6 +509,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
   } finally {
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
+    dispatchNextLocalDownload();
     if (mainWindow) mainWindow.webContents.send('downloads-updated');
   }
 }
@@ -421,7 +520,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
   try {
     const rec = getDownloadByTorboxId(tid);
     const type: 'movie' | 'series' | '' = rec?.type || '';
-    const destFolder = await resolveDestination(settings, dlData.filename || dlData.name || tid, type);
+    const destFolder = await resolveDestination(settings, dlData.filename || dlData.name || tid, type, rec?.season ?? undefined);
 
     const rd = new RealDebridAPI(token);
     safeMkdirSync(destFolder);
@@ -442,80 +541,137 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
 
     const totalLinks = links.length;
     let completedBytes = 0;
+    // Files this transfer downloaded (raw names) — for rename/subtitles scoping.
+    const downloadedFiles: string[] = [];
 
     for (let idx = 0; idx < links.length; idx++) {
       const link = links[idx];
+      let verified = false;
+      let expectedSize = 0;
+      let filePath = '';
+      let safeName = '';
 
-      // Unrestrict the link to get a direct download URL + filename
-      const unrestrictRes = await rd.unrestrictLink(link);
-      if (!unrestrictRes.success || !unrestrictRes.data) {
-        // Skip dead/expired hoster links — don't fail the whole torrent
-        console.warn(`[RD] Skipping link ${idx + 1}/${totalLinks}: unrestrict failed (${unrestrictRes.error || 'unknown'})`);
-        continue;
+      // RD links can expire or cut short mid-stream; retry with a fresh
+      // unrestricted link and resume the partial file (Range).
+      for (let attempt = 1; attempt <= 3 && !verified; attempt++) {
+        // Unrestrict the link to get a direct download URL + filename
+        const unrestrictRes = await rd.unrestrictLink(link);
+        if (!unrestrictRes.success || !unrestrictRes.data) {
+          if (attempt < 3) { await new Promise((r) => setTimeout(r, attempt * 2000)); continue; }
+          // Skip dead/expired hoster links — don't fail the whole torrent
+          console.warn(`[RD] Skipping link ${idx + 1}/${totalLinks}: unrestrict failed (${unrestrictRes.error || 'unknown'})`);
+          break;
+        }
+
+        const { download: directUrl, filename, filesize } = unrestrictRes.data;
+        if (!directUrl) {
+          if (attempt < 3) { await new Promise((r) => setTimeout(r, attempt * 2000)); continue; }
+          throw new Error(`No download URL returned for link ${idx + 1}/${totalLinks}`);
+        }
+
+        expectedSize = filesize || 0;
+
+        // Flatten to the bare filename for media (layout folder already encodes
+        // the structure); keep the path as-is for non-media downloads.
+        safeName = type === 'movie' || type === 'series'
+          ? getSafePathPart((filename || `part_${idx + 1}`).split(/[/\\]+/).pop() || `part_${idx + 1}`)
+          : getSafeRelativePath(filename || `part_${idx + 1}`, `part_${idx + 1}`);
+        filePath = path.join(destFolder, safeName);
+
+        safeMkdirSync(path.dirname(filePath));
+
+        // HARD GUARD
+        if (!isDebridCDN(directUrl)) {
+          throw new Error(
+            `Security: Download URL ${directUrl} is not from a recognized debrid CDN.`
+          );
+        }
+
+        const downloader = new Downloader(directUrl, filePath, expectedSize);
+        activeDownloaders.set(tid, downloader);
+
+        // Keep the progress bar continuous across retries (resume offset).
+        const partialBytes = expectedSize > 0 && fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+        updateDownload(tid, {
+          local_status: `Downloading ${idx + 1}/${totalLinks}${attempt > 1 ? ` (intento ${attempt})` : ''}...`,
+          local_progress: expectedSize > 0 ? Math.floor((partialBytes / expectedSize) * 100) : Math.floor((idx / totalLinks) * 100),
+          local_path: destFolder,
+        });
+        if (mainWindow) mainWindow.webContents.send('downloads-updated');
+
+        let lastUpdate = 0;
+        const onProg = (p: DownloadProgress) => {
+          const now = Date.now();
+          if (now - lastUpdate > 1000) {
+            lastUpdate = now;
+            let overall = 0;
+            if (totalBytes > 0) {
+              overall = Math.floor(((completedBytes + p.bytes_done) / totalBytes) * 100);
+            } else {
+              overall = Math.floor(((idx / totalLinks) * 100) + (p.progress_percent / totalLinks));
+            }
+
+            const remaining = totalBytes > 0 ? totalBytes - (completedBytes + p.bytes_done) : 0;
+            const eta = formatETA(remaining, p.speed);
+
+            updateDownload(tid, {
+              local_status: `Downloading ${idx + 1}/${totalLinks} (${Math.floor(p.progress_percent)}%)`,
+              local_progress: Math.max(0, Math.min(99, overall)),
+              local_speed: Math.floor(p.speed),
+              local_eta: eta,
+              local_path: destFolder,
+            });
+            if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          }
+        };
+
+        const result = await downloader.start(onProg);
+        if (!result.success) {
+          if (result.rangeIgnored) {
+            const sz = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+            if (sz > 0) {
+              console.warn(`[RD] part ${idx + 1}: CDN ignores resume — accepting existing file (${sz} bytes)`);
+              verified = true;
+              continue;
+            }
+          }
+          if (attempt < 3) {
+            console.warn(`[RD] Download part ${idx + 1} failed (${result.error}), retry ${attempt + 1}/3`);
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+            continue;
+          }
+          throw new Error(`Failed to download part ${idx + 1}: ${result.error}`);
+        }
+
+        if (expectedSize > 0) {
+          const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+          if (actualSize === expectedSize) {
+            verified = true;
+          } else if (actualSize > 0 && attempt >= 2) {
+            console.warn(`[RD] part ${idx + 1}: size ${actualSize} vs expected ${expectedSize} — accepting file`);
+            verified = true;
+          } else {
+            console.warn(`[RD] part ${idx + 1} partial (${actualSize}/${expectedSize} bytes), resuming on retry ${attempt + 1}/3`);
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+          }
+        } else {
+          verified = true;
+        }
       }
 
-      const { download: directUrl, filename, filesize } = unrestrictRes.data;
-      if (!directUrl) {
-        throw new Error(`No download URL returned for link ${idx + 1}/${totalLinks}`);
-      }
-
-      const expectedSize = filesize || 0;
-
-      // Use filename from unrestricted response, fall back to index
-      const safeName = getSafeRelativePath(filename || `part_${idx + 1}`, `part_${idx + 1}`);
-      const filePath = path.join(destFolder, safeName);
-
-      safeMkdirSync(path.dirname(filePath));
-
-      // HARD GUARD
-      if (!isDebridCDN(directUrl)) {
+      if (verified) {
+        completedBytes += expectedSize || (fs.existsSync(filePath) ? fs.statSync(filePath).size : 0);
+        downloadedFiles.push(safeName);
+      } else {
+        // All attempts failed (dead link, repeated truncation, 0 bytes) — fail
+        // the transfer instead of silently continuing with an empty file.
+        const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
         throw new Error(
-          `Security: Download URL ${directUrl} is not from a recognized debrid CDN.`
+          actualSize > 0
+            ? `Failed to verify part ${idx + 1}: expected ${expectedSize} bytes, got ${actualSize}`
+            : `Download failed for part ${idx + 1}: no data received (${expectedSize} bytes expected)`
         );
       }
-
-      const downloader = new Downloader(directUrl, filePath, expectedSize);
-      activeDownloaders.set(tid, downloader);
-
-      updateDownload(tid, {
-        local_status: `Downloading ${idx + 1}/${totalLinks}...`,
-        local_progress: Math.floor((idx / totalLinks) * 100),
-        local_path: destFolder,
-      });
-      if (mainWindow) mainWindow.webContents.send('downloads-updated');
-
-      let lastUpdate = 0;
-      const onProg = (p: DownloadProgress) => {
-        const now = Date.now();
-        if (now - lastUpdate > 1000) {
-          lastUpdate = now;
-          let overall = 0;
-          if (totalBytes > 0) {
-            overall = Math.floor(((completedBytes + p.bytes_done) / totalBytes) * 100);
-          } else {
-            overall = Math.floor(((idx / totalLinks) * 100) + (p.progress_percent / totalLinks));
-          }
-
-          const remaining = totalBytes > 0 ? totalBytes - (completedBytes + p.bytes_done) : 0;
-          const eta = formatETA(remaining, p.speed);
-
-          updateDownload(tid, {
-            local_status: `Downloading ${idx + 1}/${totalLinks} (${Math.floor(p.progress_percent)}%)`,
-            local_progress: Math.max(0, Math.min(99, overall)),
-            local_speed: Math.floor(p.speed),
-            local_eta: eta,
-            local_path: destFolder,
-          });
-          if (mainWindow) mainWindow.webContents.send('downloads-updated');
-        }
-      };
-
-      const result = await downloader.start(onProg);
-      if (!result.success) {
-        throw new Error(`Failed to download part ${idx + 1}: ${result.error}`);
-      }
-
-      completedBytes += expectedSize || result.bytes_downloaded;
     }
 
     // If no links were successfully downloaded, report the failure
@@ -530,11 +686,12 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
       local_path: destFolder,
     });
     console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
-    if (type === 'series') {
-      renameForJellyfin(dlData.filename || dlData.name || tid, rec, destFolder);
-    }
+    // Subtitles FIRST (raw filenames still on disk), then rename video + subs.
     if (type === 'movie' || type === 'series') {
-      await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder);
+      await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder, downloadedFiles);
+    }
+    if (type === 'series') {
+      renameForJellyfin(dlData.filename || dlData.name || tid, rec, destFolder, downloadedFiles);
     }
 
   } catch (err: any) {
@@ -545,37 +702,100 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
   } finally {
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
+    dispatchNextLocalDownload();
     if (mainWindow) mainWindow.webContents.send('downloads-updated');
   }
 }
 
 // ── Subtítulos automáticos (es/en) ─────────────────────
 const VIDEO_EXT_RE = /\.(mkv|mp4|avi|m4v|mov|wmv)$/i;
+const SUB_EXT_RE = /\.(srt|vtt|ass|ssa|sub)$/i;
 const EP_RE = /[sS](\d{1,2})[eE](\d{1,2})/;
 
 // ── Renombrado Jellyfin (serie) ─────────────────────────
 // Título derivado del nombre del torrent (parseReleaseName); código SxxEyy
 // de la metadata guardada al agregar (season/episode) o, fallback, del nombre.
-function renameForJellyfin(name: string, rec: { season?: number | null; episode?: number | null } | undefined, destFolder: string) {
+// Renombra SOLO los archivos que ESTA transferencia descargó (ownFiles): varias
+// transferencias de la misma temporada comparten carpeta y renombrar "todos los
+// videos de la carpeta" hacía que una transferencia renombrara el archivo que
+// otra seguía descargando → verificación fallaba (path renombrado = 0 bytes) y
+// la descarga se reiniciaba.
+// Los subtítulos (<video>.spa.srt, .eng.srt, ...) se renombran junto al video
+// para que coincidan con el episodio ya renombrado.
+function renameForJellyfin(name: string, rec: { season?: number | null; episode?: number | null } | undefined, destFolder: string, ownFiles?: string[]) {
   try {
-    const videos = fs.readdirSync(destFolder)
+    let videos = fs.readdirSync(destFolder)
       .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
       .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
+    if (ownFiles && ownFiles.length > 0) {
+      const own = new Set(ownFiles.map((f) => f.toLowerCase()));
+      videos = videos.filter((v) => own.has(v.toLowerCase()));
+    }
     if (videos.length === 0) return;
 
-    const epMatch = name.match(EP_RE);
-    const season = rec?.season ?? (epMatch ? parseInt(epMatch[1], 10) : undefined);
-    const episode = rec?.episode ?? (epMatch ? parseInt(epMatch[2], 10) : undefined);
-    if (!season || !episode) return; // SxxEyy no determinable → mantener nombre original
-
-    const target = path.join(destFolder, videos[0]);
-    const ext = path.extname(target);
+    const torrentEp = name.match(EP_RE);
     const title = parseReleaseName(name).title;
-    const code = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
-    const newPath = path.join(destFolder, `${title}.${code}${ext}`);
-    if (newPath === target) return;
-    fs.renameSync(target, newPath);
-    console.log(`[Worker] Renamed ${videos[0]} → ${path.basename(newPath)}`);
+    let renamed = 0;
+
+    /** Rename subtitle sidecars sharing the raw base (e.g. "...spa.srt"). */
+    const moveSubs = (srcBase: string, dstBase: string) => {
+      for (const f of fs.readdirSync(destFolder)) {
+        if (!SUB_EXT_RE.test(f)) continue;
+        if (!(f.startsWith(srcBase + '.') || f.startsWith(srcBase + '_'))) continue;
+        const src = path.join(destFolder, f);
+        const dst = path.join(destFolder, dstBase + f.slice(srcBase.length));
+        try {
+          if (fs.existsSync(dst)) fs.unlinkSync(src); // duplicate sidecar → drop
+          else fs.renameSync(src, dst);
+        } catch (e: any) {
+          console.log(`[Worker] sub rename skip: ${e.message}`);
+        }
+      }
+    };
+
+    /** Delete subtitle sidecars of a removed duplicate video. */
+    const deleteSubs = (srcBase: string) => {
+      for (const f of fs.readdirSync(destFolder)) {
+        if (!SUB_EXT_RE.test(f)) continue;
+        if (!(f.startsWith(srcBase + '.') || f.startsWith(srcBase + '_'))) continue;
+        try { fs.unlinkSync(path.join(destFolder, f)); } catch { /* ignore */ }
+      }
+    };
+
+    for (const v of videos) {
+      // Prefer the SxxEyy inside each file's own name (season packs); fall back
+      // to the DB record, then the torrent name.
+      const fileEp = v.match(EP_RE);
+      const season = fileEp ? parseInt(fileEp[1], 10) : (rec?.season ?? (torrentEp ? parseInt(torrentEp[1], 10) : undefined));
+      const episode = fileEp ? parseInt(fileEp[2], 10) : (rec?.episode ?? (torrentEp ? parseInt(torrentEp[2], 10) : undefined));
+      if (!season || !episode) continue; // SxxEyy no determinable → mantener nombre original
+
+      const target = path.join(destFolder, v);
+      const ext = path.extname(target);
+      const code = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+      const rawBase = path.basename(v, ext);
+      const newBase = `${title}.${code}`;
+      const newPath = path.join(destFolder, `${newBase}${ext}`);
+      if (newPath === target) continue;
+      if (fs.existsSync(newPath)) {
+        // The renamed file already exists (e.g. a previous run renamed this
+        // episode) → this freshly downloaded file is a duplicate. Remove it
+        // (and its subtitles) instead of colliding with the existing file.
+        try {
+          fs.unlinkSync(target);
+          deleteSubs(rawBase);
+          console.log(`[Worker] ${v} already exists as ${path.basename(newPath)} — removed duplicate`);
+          renamed++;
+        } catch (e: any) {
+          console.log(`[Worker] duplicate cleanup skip: ${e.message}`);
+        }
+        continue;
+      }
+      fs.renameSync(target, newPath);
+      moveSubs(rawBase, newBase);
+      renamed++;
+    }
+    if (renamed > 0) console.log(`[Worker] Renamed ${renamed} video(s) in ${destFolder}`);
   } catch (e: any) {
     console.log(`[Worker] rename skip: ${e.message}`);
   }
@@ -602,7 +822,7 @@ function subtitleCommand(): { cmd: string; args: string[] } | null {
  * destino y descarga subtítulos (español + inglés) vía electron/subtitles.py.
  * Fire-and-forget: errores solo se loguean, nunca fallan la descarga.
  */
-async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string) {
+async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string, ownFiles?: string[]) {
   try {
     const run = subtitleCommand();
     if (!run) {
@@ -610,9 +830,13 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
       return;
     }
 
-    const videos = fs.readdirSync(destFolder)
+    let videos = fs.readdirSync(destFolder)
       .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
       .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
+    if (ownFiles && ownFiles.length > 0) {
+      const own = new Set(ownFiles.map((f) => f.toLowerCase()));
+      videos = videos.filter((v) => own.has(v.toLowerCase()));
+    }
     if (videos.length === 0) return;
 
     // Título base: quitar año, SxxExx, tags de calidad y release group
@@ -639,7 +863,7 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
       const args = [...run.args, 'fetch', '--title', title, '--type', isSeries ? 'series' : 'movie', '--dest', videoPath];
       if (isSeries && epMatch) args.push('--season', epMatch[1], '--episode', epMatch[2]);
       await new Promise<void>((resolve) => {
-        const proc = spawn(run.cmd, args, { windowsHide: true, env: process.env as any });
+        const proc = spawn(run.cmd, args, { windowsHide: true, env: { ...(process.env as any), PYTHONIOENCODING: 'utf-8' } });
         let out = '';
         proc.stdout?.on('data', (c: Buffer) => (out += c.toString()));
         proc.stderr?.on('data', (c: Buffer) => (out += c.toString()));

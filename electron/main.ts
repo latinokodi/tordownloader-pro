@@ -11,6 +11,8 @@ import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { startWorker, cancelLocalDownload } from './worker'
 import { initAutoUpdater, checkForUpdates, checkForUpdatesManual, downloadUpdate, installUpdate, dismissUpdate } from './updater'
+import { computeDestination, safeSegment } from './media-layout'
+import { getSeasonCache, saveSeasonCache } from './season-cache'
 
 // ── Single instance lock ──────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
@@ -178,6 +180,91 @@ ipcMain.handle('search-metasearch', async (e, query: string) => {
 
 ipcMain.handle('get-downloads', () => getDownloads());
 
+// ── Season resolution cache ─────────────────────────────
+// Re-trying the same series + season reuses the previously resolved per-episode
+// results instead of re-running the provider/metasearch lookups.
+ipcMain.handle('get-season-cache', (_e, imdbId: string, season: number) => {
+  const entry = getSeasonCache(imdbId, season)
+  return entry ? { found: true, episodes: entry.episodes } : { found: false, episodes: {} }
+});
+
+ipcMain.handle('save-season-cache', (_e, imdbId: string, season: number, episodes: Record<string, unknown[]>) => {
+  saveSeasonCache(imdbId, season, episodes || {})
+  return { success: true }
+});
+
+// ── Season re-run detection ─────────────────────────────
+// Scans for already-downloaded episode video files (SxxExx) so a re-run of the
+// season download skips episodes that are already on disk instead of re-adding
+// them. Primary pass: the computed season folder (<Title (Year)>/Season NN).
+// Fallback: a recursive scan scoped to show-title directories (accent-folded),
+// so other shows' SxxExx files are never mistaken for this show's episodes.
+// ALSO returns transfers already queued for this show+season.
+
+/** Significant title tokens (accent-folded): "House of the Dragon" → [house, dragon]. */
+function titleTokens(title: string): string[] {
+  const STOP = new Set(['the','a','an','of','and','or','in','on','at','for','to','de','la','el','los','las','y','del','al','en','un','una','por','para','con','se','le','lo','su','sus','mi','tu','es','that','this','with','from','series','season','episode','capitulo','temporada'])
+  const norm = (title || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  return norm.split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !STOP.has(w))
+}
+
+ipcMain.handle('get-downloaded-episodes', async (_e, title: string, season: number) => {
+  const settings = getSettings();
+  const found = new Set<number>();
+  const queued = new Set<number>();
+  const re = new RegExp(`S0?${season}E0?(\\d{1,3})`, 'i');
+  const VIDEO_RE = /\.(mkv|mp4|avi|m4v|mov|wmv)$/i;
+  const tokens = titleTokens(title);
+
+  // A directory is "eligible" when it (or an ancestor) contains a significant
+  // title token — e.g. "Lanterns (2026)/Season 01" matches "Lanterns", but
+  // other shows' folders never do.
+  const visit = (dir: string, depth: number, inheritedEligible: boolean) => {
+    if (depth > 6) return;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const dirEligible = inheritedEligible || tokens.length === 0
+      || tokens.some((t) => path.basename(dir).toLowerCase().includes(t));
+    for (const ent of entries) {
+      if (ent.name.startsWith('.')) continue;
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) visit(full, depth + 1, dirEligible);
+      else if (ent.isFile() && dirEligible && VIDEO_RE.test(ent.name)) {
+        const m = re.exec(ent.name);
+        if (m) found.add(parseInt(m[1], 10));
+      }
+    }
+  };
+
+  // 1) Exact computed season folder (fast, precise path).
+  try {
+    const { root, folder } = await computeDestination(settings, title, 'series', season);
+    const seasonDir = path.join(root, ...folder.split('/').map(safeSegment));
+    visit(seasonDir, 0, true);
+  } catch { /* fall through to scoped scan */ }
+
+  // 2) Scoped scan of the series root when the exact path found nothing
+  // (renamed folders, TMDB title/year differences).
+  if (found.size === 0) {
+    const root = settings.series_folder || settings.destination_folder;
+    if (root) visit(root, 0, false);
+  }
+
+  // 3) Transfers already in the queue for this show + season (scope by title
+  // tokens — never match another show's SxxExx transfers).
+  for (const d of getDownloads()) {
+    if (d.type !== 'series' || d.season !== season || d.episode == null) continue;
+    const nm = (d.name || '').toLowerCase();
+    if (tokens.length > 0 && !tokens.some((t) => nm.includes(t))) continue;
+    const ls = (d.local_status || '').toLowerCase();
+    if (ls.startsWith('failed')) continue; // failed stays re-addable
+    if (ls === 'completed') found.add(d.episode);
+    else queued.add(d.episode);
+  }
+
+  return { episodes: [...found], queued: [...queued] };
+});
+
 ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbox', type: string = '', season: number | null = null, episode: number | null = null) => {
   const settings = getSettings();
 
@@ -189,12 +276,21 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
       const rd = new RealDebridAPI(settings.realdebrid_token);
       const result = await rd.addMagnet(magnet);
 
-      if (result.success && result.data) {
-        const { id } = RealDebridAPI.torrentIdentity(result.data);
+      if (result && result.success) {
+        const { id } = result.data ? RealDebridAPI.torrentIdentity(result.data) : { id: '' };
         if (id) {
           const existing = getDownloadByTorboxId(id);
           if (existing) {
-            updateDownload(id, { local_status: 'pending', service: 'realdebrid', type: type as any, season, episode });
+            // Re-adding a magnet whose transfer already exists must NOT reset an
+            // active/queued download (that would restart it). Only a previously
+            // failed transfer is re-armed for retry.
+            updateDownload(id, {
+              ...((existing.local_status || '').toLowerCase().startsWith('failed') ? { local_status: 'pending' } : {}),
+              service: 'realdebrid',
+              type: type as any,
+              season,
+              episode,
+            });
           } else {
             addDownload({
               torbox_id: id,
@@ -208,9 +304,10 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
             });
           }
           if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          return result;
         }
       }
-      return result;
+      return { success: false, error: result?.error || result?.detail || 'No se pudo obtener el id del torrent' };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
@@ -225,12 +322,21 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
     const tb = new TorboxAPI(settings.torbox_token);
     const result = await tb.addMagnet(magnet);
 
-    if (result.success && result.data) {
-      const { id } = TorboxAPI.torrentIdentity(result.data);
+    if (result && result.success) {
+      const { id } = result.data ? TorboxAPI.torrentIdentity(result.data) : { id: '' };
       if (id) {
         const existing = getDownloadByTorboxId(id);
         if (existing) {
-          updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any, season, episode });
+          // Re-adding a magnet whose transfer already exists must NOT reset an
+          // active/queued download (that would restart it). Only a previously
+          // failed transfer is re-armed for retry.
+          updateDownload(id, {
+            ...((existing.local_status || '').toLowerCase().startsWith('failed') ? { local_status: 'pending' } : {}),
+            service: 'torbox',
+            type: type as any,
+            season,
+            episode,
+          });
         } else {
           addDownload({
             torbox_id: id,
@@ -244,9 +350,10 @@ ipcMain.handle('add-magnet', async (_e, magnet: string, service: string = 'torbo
           });
         }
         if (mainWindow) mainWindow.webContents.send('downloads-updated');
+        return result;
       }
     }
-    return result;
+    return { success: false, error: result?.error || result?.detail || 'No se pudo obtener el id del torrent' };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
@@ -263,12 +370,21 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
       const rd = new RealDebridAPI(settings.realdebrid_token);
       const result = await rd.addTorrentFromUrl(torrentUrl);
 
-      if (result.success && result.data) {
-        const { id } = RealDebridAPI.torrentIdentity(result.data);
+      if (result && result.success) {
+        const { id } = result.data ? RealDebridAPI.torrentIdentity(result.data) : { id: '' };
         if (id) {
           const existing = getDownloadByTorboxId(id);
           if (existing) {
-            updateDownload(id, { local_status: 'pending', service: 'realdebrid', type: type as any, season, episode });
+            // Re-adding a magnet whose transfer already exists must NOT reset an
+            // active/queued download (that would restart it). Only a previously
+            // failed transfer is re-armed for retry.
+            updateDownload(id, {
+              ...((existing.local_status || '').toLowerCase().startsWith('failed') ? { local_status: 'pending' } : {}),
+              service: 'realdebrid',
+              type: type as any,
+              season,
+              episode,
+            });
           } else {
             addDownload({
               torbox_id: id,
@@ -282,9 +398,10 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
             });
           }
           if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          return result;
         }
       }
-      return result;
+      return { success: false, error: result?.error || result?.detail || 'No se pudo obtener el id del torrent' };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
@@ -299,12 +416,21 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
     const tb = new TorboxAPI(settings.torbox_token);
     const result = await tb.addTorrentFromUrl(torrentUrl);
 
-    if (result.success && result.data) {
-      const { id } = TorboxAPI.torrentIdentity(result.data);
+    if (result && result.success) {
+      const { id } = result.data ? TorboxAPI.torrentIdentity(result.data) : { id: '' };
       if (id) {
         const existing = getDownloadByTorboxId(id);
         if (existing) {
-          updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any, season, episode });
+          // Re-adding a magnet whose transfer already exists must NOT reset an
+          // active/queued download (that would restart it). Only a previously
+          // failed transfer is re-armed for retry.
+          updateDownload(id, {
+            ...((existing.local_status || '').toLowerCase().startsWith('failed') ? { local_status: 'pending' } : {}),
+            service: 'torbox',
+            type: type as any,
+            season,
+            episode,
+          });
         } else {
           addDownload({
             torbox_id: id,
@@ -318,11 +444,29 @@ ipcMain.handle('add-torrent-url', async (_e, torrentUrl: string, service: string
           });
         }
         if (mainWindow) mainWindow.webContents.send('downloads-updated');
+        return result;
       }
     }
-    return result;
+    return { success: false, error: result?.error || result?.detail || 'No se pudo obtener el id del torrent' };
   } catch (error: any) {
     return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('torbox-has-hash', async (_e, hash: string) => {
+  const settings = getSettings();
+  if (!settings.torbox_token || !hash) return { has: false, error: 'no token or hash' };
+  try {
+    const tb = new TorboxAPI(settings.torbox_token);
+    const res = await tb.getTorrents();
+    if (res && Array.isArray(res.data)) {
+      const h = String(hash).toLowerCase();
+      const found = res.data.some((t: any) => String(t.hash || t.info_hash || '').toLowerCase() === h);
+      return { has: found };
+    }
+    return { has: false };
+  } catch (error: any) {
+    return { has: false, error: error.message };
   }
 });
 
