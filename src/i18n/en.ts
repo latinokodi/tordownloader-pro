@@ -18,6 +18,7 @@ const en = {
     addedToast: 'Added to the watchlist — it will be downloaded automatically when released',
     removedToast: 'Removed from the watchlist',
     noResults: 'No TMDB results',
+    noResultsHint: 'Type a movie or series name to search TMDB…',
     searchPlaceholder: 'Search movies & series…',
     searchBtn: 'Search',
     searching: 'Searching…',

@@ -20,6 +20,7 @@ const es: TranslationKeys = {
     addedToast: 'Añadido al seguimiento — se descargará solo cuando se estrene',
     removedToast: 'Eliminado del seguimiento',
     noResults: 'Sin resultados en TMDB',
+    noResultsHint: 'Escribe el nombre de una película o serie para buscarla en TMDB…',
     searchPlaceholder: 'Buscar películas y series…',
     searchBtn: 'Buscar',
     searching: 'Buscando…',

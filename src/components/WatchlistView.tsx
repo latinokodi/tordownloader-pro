@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookMarked, Plus, Play, Pause, RefreshCw, Trash2, MonitorCheck, Search } from 'lucide-react'
+import { BookMarked, Plus, Play, Pause, RefreshCw, Trash2, MonitorCheck, Search, X } from 'lucide-react'
 import { useT } from '../i18n'
 import { http } from '../hooks/http'
 
@@ -67,6 +67,23 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
   }, [refresh])
 
   const monitoredCount = useMemo(() => items.filter((i) => i.monitored).length, [items])
+
+  const openAdd = useCallback(() => {
+    setQ('')
+    setHits([])
+    setSearching(false)
+    setShowAdd(true)
+  }, [])
+
+  // Cerrar el modal de añadir con Escape
+  useEffect(() => {
+    if (!showAdd) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowAdd(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showAdd])
 
   const doSearch = useCallback(async () => {
     if (!q.trim()) return
@@ -226,160 +243,216 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
             <RefreshCw size={13} className={`inline mr-1 ${busy ? 'animate-spin' : ''}`} />
             {t.watchlist.checkAll}
           </button>
-          <button className="btn btn-accent text-xs px-3" onClick={() => { setShowAdd((v) => !v); if (showAdd) { setQ(''); setHits([]) } }}>
-            <Plus size={14} className="inline mr-1" />
+          <button className="btn btn-accent px-4" onClick={openAdd}>
+            <Plus size={15} className="inline mr-1" />
             {t.watchlist.add}
           </button>
         </div>
       </div>
 
-      {/* Add panel */}
+      {/* Add title — modal (centrado, sin scroll de página para añadir) */}
       {showAdd && (
-        <div className="glass-panel p-4 space-y-4">
-          <div className="flex gap-3">
-            <input
-              className="input-field flex-1"
-              placeholder={t.watchlist.searchPlaceholder}
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && doSearch()}
-              autoFocus
-            />
-            <button className="btn btn-accent" onClick={doSearch} disabled={searching || !q.trim()}>
-              <Search size={14} className="inline mr-1" />
-              {searching ? t.watchlist.searching : t.watchlist.searchBtn}
-            </button>
-          </div>
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-xs">
-            <div className="flex items-center gap-3">
-              <span className="text-text-muted uppercase tracking-wider">{t.watchlist.profile}</span>
-              <select className="input-field w-auto py-1 text-xs" value={pendingProfile} onChange={(e) => setPendingProfile(e.target.value)}>
-                {PROFILE_ORDER.map((p) => (
-                  <option key={p} value={p}>{profileLabel(p)}</option>
-                ))}
-              </select>
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowAdd(false)
+          }}
+        >
+          <div className="w-full max-w-4xl h-[min(88vh,46rem)] overflow-hidden rounded-2xl bg-bg-panel border border-border shadow-2xl flex flex-col">
+            {/* Header */}
+            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between shrink-0">
+              <h2 className="font-extrabold text-text-heading flex items-center gap-2">
+                <Plus size={17} className="text-accent" /> {t.watchlist.add}
+              </h2>
+              <button
+                className="w-8 h-8 rounded-full flex items-center justify-center text-text-muted hover:bg-bg-input hover:text-text-heading transition-colors"
+                title="Cerrar"
+                onClick={() => setShowAdd(false)}
+              >
+                <X size={17} />
+              </button>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="text-text-muted uppercase tracking-wider">{t.watchlist.scope}</span>
-              <select className="input-field w-auto py-1 text-xs" value={pendingScope} onChange={(e) => setPendingScope(e.target.value as any)} title={t.watchlist.scope}>
-                {SCOPE_ORDER.map((s) => (
-                  <option key={s} value={s}>{scopeLabel(s)}</option>
-                ))}
-              </select>
-              <span className="text-[11px] text-text-muted">(series)</span>
-            </div>
-          </div>
-          {hits.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 max-h-[26rem] overflow-auto pr-1 pb-1">
-              {hits.map((hit) => (
-                <div key={`${hit.media_type}-${hit.id}`} className="group flex flex-col overflow-hidden rounded-xl border border-border bg-bg-card hover:border-accent/60 transition-colors">
-                  <div className="relative aspect-[2/3] bg-bg-input overflow-hidden">
-                    {hit.poster ? (
-                      <img src={hit.poster} alt={hit.title} className="w-full h-full object-cover" loading="lazy" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-text-muted"><BookMarked size={30} strokeWidth={1.4} /></div>
-                    )}
-                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-bg-deep/85 text-text-main backdrop-blur-sm">
-                      {hit.media_type === 'movie' ? t.watchlist.movie : t.watchlist.series}
-                    </span>
-                  </div>
-                  <div className="p-2.5 flex flex-col gap-1.5 flex-1">
-                    <div className="text-[13px] font-semibold text-text-heading leading-snug line-clamp-2 min-h-[2.6em]" title={hit.title}>
-                      {hit.title}
-                    </div>
-                    <div className="text-[11px] text-text-muted">{hit.year || '—'}</div>
-                    <button className="btn btn-accent w-full text-xs px-2 py-1.5 mt-auto" onClick={() => addItem(hit)} disabled={busy}>
-                      <Plus size={13} />{t.watchlist.addItem}
-                    </button>
-                  </div>
+
+            {/* Search + options (fijos) */}
+            <div className="px-5 pt-4 pb-3 space-y-3 border-b border-border shrink-0">
+              <div className="flex gap-3">
+                <input
+                  className="input-field flex-1"
+                  placeholder={t.watchlist.searchPlaceholder}
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+                  autoFocus
+                />
+                <button className="btn btn-accent px-4" onClick={doSearch} disabled={searching || !q.trim()}>
+                  <Search size={14} className="inline mr-1" />
+                  {searching ? t.watchlist.searching : t.watchlist.searchBtn}
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-xs">
+                <div className="flex items-center gap-3">
+                  <span className="text-text-muted uppercase tracking-wider">{t.watchlist.profile}</span>
+                  <select className="input-field w-auto py-1 text-xs" value={pendingProfile} onChange={(e) => setPendingProfile(e.target.value)}>
+                    {PROFILE_ORDER.map((p) => (
+                      <option key={p} value={p}>{profileLabel(p)}</option>
+                    ))}
+                  </select>
                 </div>
-              ))}
+                <div className="flex items-center gap-3">
+                  <span className="text-text-muted uppercase tracking-wider">{t.watchlist.scope}</span>
+                  <select className="input-field w-auto py-1 text-xs" value={pendingScope} onChange={(e) => setPendingScope(e.target.value as any)} title={t.watchlist.scope}>
+                    {SCOPE_ORDER.map((s) => (
+                      <option key={s} value={s}>{scopeLabel(s)}</option>
+                    ))}
+                  </select>
+                  <span className="text-[11px] text-text-muted">(series)</span>
+                </div>
+              </div>
             </div>
-          )}
+
+            {/* Results (scroll interno del modal únicamente) */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+              {hits.length === 0 && !searching && (
+                <div className="h-full flex flex-col items-center justify-center gap-2 text-text-muted py-10">
+                  <BookMarked size={30} strokeWidth={1.3} />
+                  <p className="text-sm text-center px-6">{t.watchlist.noResultsHint}</p>
+                </div>
+              )}
+              {hits.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4">
+                  {hits.map((hit) => (
+                    <div key={`${hit.media_type}-${hit.id}`} className="group relative flex flex-col overflow-hidden rounded-xl border border-border bg-bg-card hover:border-accent/60 transition-colors">
+                      <div className="relative aspect-[2/3] bg-bg-input overflow-hidden">
+                        {hit.poster ? (
+                          <img src={hit.poster} alt={hit.title} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-text-muted"><BookMarked size={30} strokeWidth={1.4} /></div>
+                        )}
+                        <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-bg-deep/85 text-text-main backdrop-blur-sm">
+                          {hit.media_type === 'movie' ? t.watchlist.movie : t.watchlist.series}
+                        </span>
+                        {/* Acción rápida sobre el póster */}
+                        <button
+                          className="absolute left-2 right-2 bottom-2 opacity-0 group-hover:opacity-100 transition-opacity btn btn-accent text-xs px-2 py-1.5"
+                          onClick={() => addItem(hit)}
+                          disabled={busy}
+                        >
+                          <Plus size={13} /> {t.watchlist.addItem}
+                        </button>
+                      </div>
+                      <div className="p-2.5 flex flex-col gap-1 flex-1">
+                        <div className="text-[12.5px] font-semibold text-text-heading leading-snug line-clamp-2 min-h-[2.5em]" title={hit.title}>
+                          {hit.title}
+                        </div>
+                        <div className="text-[11px] text-text-muted">{hit.year || '—'}</div>
+                        <button className="btn btn-accent w-full text-xs px-2 py-1.5 mt-auto" onClick={() => addItem(hit)} disabled={busy}>
+                          <Plus size={13} />{t.watchlist.addItem}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Watchlist rows */}
-      <div className="flex-1 overflow-auto space-y-3 pr-1">
+      {/* Watchlist — poster grid (Sonarr-style) */}
+      <div className="flex-1 overflow-auto pr-1">
         {items.length === 0 && !showAdd && (
           <div className="h-full flex flex-col items-center justify-center gap-3 text-text-muted">
             <BookMarked size={40} strokeWidth={1.2} />
             <div className="font-mono uppercase tracking-widest text-sm text-center px-8">{t.watchlist.empty}</div>
           </div>
         )}
-        {items.map((item) => (
-          <div key={item.id} className={`glass-panel p-3 flex items-center gap-4 ${!item.monitored ? 'opacity-60' : ''}`}>
-            {item.poster ? (
-              <img src={item.poster} alt="" className="w-12 h-16 object-cover rounded" loading="lazy" />
-            ) : (
-              <div className="w-12 h-16 bg-bg-deep rounded flex items-center justify-center text-text-muted"><BookMarked size={18} /></div>
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-bold text-sm truncate">{item.title}</span>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 border border-border rounded text-text-muted">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+          {items.map((item) => (
+            <div
+              key={item.id}
+              className={`group relative flex flex-col overflow-hidden rounded-xl border border-border bg-bg-card hover:border-accent/60 transition-colors ${
+                !item.monitored ? 'opacity-70' : ''
+              }`}
+            >
+              {/* Poster */}
+              <div className="relative aspect-[2/3] bg-bg-input overflow-hidden">
+                {item.poster ? (
+                  <img src={item.poster} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-text-muted">
+                    <BookMarked size={34} strokeWidth={1.4} />
+                  </div>
+                )}
+                <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-bg-deep/85 text-text-main backdrop-blur-sm">
                   {item.media_type === 'movie' ? t.watchlist.movie : t.watchlist.series}
                 </span>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/30">
-                  {profileLabel(item.language_profile)}
-                </span>
-                {item.monitored && <span className="text-[10px] font-mono text-success">● {t.watchlist.monitoring}</span>}
-                {!item.monitored && <span className="text-[10px] font-mono text-text-muted">○ {t.watchlist.paused}</span>}
+                <span
+                  className={`absolute top-2.5 right-2.5 w-2.5 h-2.5 rounded-full border border-white/80 ${item.monitored ? 'bg-success' : 'bg-text-muted'}`}
+                  title={item.monitored ? t.watchlist.monitoring : t.watchlist.paused}
+                />
+                {/* Hover actions */}
+                <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2.5">
+                  <button
+                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors"
+                    title={item.monitored ? t.watchlist.pause : t.watchlist.resume}
+                    onClick={() => toggleMonitored(item)}
+                  >
+                    {item.monitored ? <Pause size={15} /> : <Play size={15} />}
+                  </button>
+                  <button
+                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors"
+                    title={t.watchlist.checkNow}
+                    onClick={() => checkItem(item.id)}
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                  <button
+                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
+                    title={t.watchlist.remove}
+                    onClick={() => removeItem(item)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
-              <div className="text-[11px] text-text-muted font-mono mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
-                {item.next_episode && item.media_type === 'series' && (
-                  <span className="text-accent/90">{t.watchlist.nextEpisode}: {item.next_episode}</span>
-                )}
-                <span>{t.watchlist.lastChecked}: {item.last_checked ? new Date(item.last_checked).toLocaleString() : t.watchlist.never}</span>
+
+              {/* Body */}
+              <div className="p-2.5 flex flex-col gap-1.5 flex-1">
+                <div className="text-[13px] font-semibold text-text-heading leading-snug line-clamp-2 min-h-[2.6em]" title={item.title}>
+                  {item.title}
+                </div>
+                <div className="text-[11px] text-text-muted truncate" title={item.media_type === 'series' && item.next_episode ? item.next_episode : item.year || ''}>
+                  {item.year || '—'}
+                  {item.media_type === 'series' && item.next_episode ? ` · ${item.next_episode}` : ''}
+                </div>
+                <div className="flex flex-col gap-1 mt-auto">
+                  <select
+                    className="input-field w-full py-1 text-[11px]"
+                    value={item.language_profile}
+                    onChange={(e) => setProfile(item, e.target.value)}
+                    title={t.watchlist.profile}
+                  >
+                    {PROFILE_ORDER.map((p) => (
+                      <option key={p} value={p}>{profileLabel(p)}</option>
+                    ))}
+                  </select>
+                  {item.media_type === 'series' && (
+                    <select
+                      className="input-field w-full py-1 text-[11px]"
+                      value={item.backfill || 'new'}
+                      onChange={(e) => setBackfill(item, e.target.value)}
+                      title={t.watchlist.scope}
+                    >
+                      {SCOPE_ORDER.map((s) => (
+                        <option key={s} value={s}>{scopeLabel(s)}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <select
-                className="input-field w-auto py-1 text-[11px] font-mono"
-                value={item.language_profile}
-                onChange={(e) => setProfile(item, e.target.value)}
-                title={t.watchlist.profile}
-              >
-                {PROFILE_ORDER.map((p) => (
-                  <option key={p} value={p}>{profileLabel(p)}</option>
-                ))}
-              </select>
-              {item.media_type === 'series' && (
-                <select
-                  className="input-field w-auto py-1 text-[11px] font-mono max-w-[10rem]"
-                  value={item.backfill || 'new'}
-                  onChange={(e) => setBackfill(item, e.target.value)}
-                  title={t.watchlist.scope}
-                >
-                  {SCOPE_ORDER.map((s) => (
-                    <option key={s} value={s}>{scopeLabel(s)}</option>
-                  ))}
-                </select>
-              )}
-              <button
-                className="btn border border-border text-xs px-2.5 py-1.5 hover:border-accent hover:text-accent"
-                title={item.monitored ? t.watchlist.pause : t.watchlist.resume}
-                onClick={() => toggleMonitored(item)}
-              >
-                {item.monitored ? <Pause size={13} /> : <Play size={13} />}
-              </button>
-              <button
-                className="btn border border-border text-xs px-2.5 py-1.5 hover:border-accent hover:text-accent"
-                title={t.watchlist.checkNow}
-                onClick={() => checkItem(item.id)}
-              >
-                <RefreshCw size={13} />
-              </button>
-              <button
-                className="btn border border-border text-xs px-2.5 py-1.5 hover:border-danger hover:text-danger"
-                title={t.watchlist.remove}
-                onClick={() => removeItem(item)}
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   )
