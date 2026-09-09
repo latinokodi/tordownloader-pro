@@ -9,8 +9,15 @@ interface SettingsSchema {
   realdebrid_client_id: string
   realdebrid_client_secret: string
   destination_folder: string
+  movies_folder: string
+  series_folder: string
   auto_remove_completed: boolean
   tmdb_api_key: string
+  language_profile?: string
+  monitor_enabled?: boolean
+  monitor_interval_minutes?: number
+  automation_service?: string
+  automation_failover?: boolean
 }
 
 interface Props {
@@ -420,12 +427,34 @@ export function SettingsModal({ onClose, showToast }: Props) {
                 <input
                   type="text"
                   className="input-field flex-1"
-                  readOnly
-                  placeholder={t.settings.selectFolder}
+                  placeholder="/data/downloads"
                   value={settings?.destination_folder || ''}
+                  onChange={(e) => setSettings((s) => s ? { ...s, destination_folder: e.target.value } : null)}
                 />
-                <button type="button" onClick={handleSelectFolder} className="btn border border-border text-text-main hover:border-accent">{t.settings.browse}</button>
               </div>
+              <p className="text-xs text-text-muted mt-1">Fallback used when no type is selected.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-mono text-text-muted mb-2 uppercase">Movies folder (Jellyfin)</label>
+              <input
+                type="text"
+                className="input-field w-full"
+                placeholder="/srv/storage/arr-data/media/movies"
+                value={settings?.movies_folder || ''}
+                onChange={(e) => setSettings((s) => s ? { ...s, movies_folder: e.target.value } : null)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-mono text-text-muted mb-2 uppercase">Series folder (Jellyfin)</label>
+              <input
+                type="text"
+                className="input-field w-full"
+                placeholder="/srv/storage/arr-data/media/tv"
+                value={settings?.series_folder || ''}
+                onChange={(e) => setSettings((s) => s ? { ...s, series_folder: e.target.value } : null)}
+              />
             </div>
             <div className="flex items-center gap-3 mt-4">
               <input

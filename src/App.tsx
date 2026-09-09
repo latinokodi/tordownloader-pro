@@ -19,6 +19,7 @@ import { Search, FolderOpen } from 'lucide-react'
 const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => ({ default: m.SettingsModal })))
 const LogPanel = lazy(() => import('./components/LogPanel').then(m => ({ default: m.LogPanel })))
 const DiscoverView = lazy(() => import('./components/DiscoverView').then(m => ({ default: m.DiscoverView })))
+const WatchlistView = lazy(() => import('./components/WatchlistView').then(m => ({ default: m.WatchlistView })))
 
 const CLOUD_DONE_STATUSES = ['completed', 'cached', 'finished', 'downloaded']
 
@@ -35,7 +36,6 @@ function App() {
   const [activeNav, setActiveNav] = useState('search')
   const [downloads, setDownloads] = useState<any[]>([])
   const [destFolder, setDestFolder] = useState('')
-  const [flaresolverrStatus, setFlareSolverrStatus] = useState<'ready' | 'starting' | 'failed' | 'off'>('starting')
 
   // ── Toast ──
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
@@ -171,18 +171,6 @@ function App() {
     if (!result.success) showToast(`${t.toasts.failedOpenFolder}: ${result.error}`, 'error')
   }, [destFolder, showToast, t])
 
-  // ── FlareSolverr restart ──
-  const handleFlareSolverrRestart = useCallback(async () => {
-    setFlareSolverrStatus('starting')
-    try {
-      const ea = getElectronAPI()
-      const res = await ea?.flaresolverrRestart()
-      setFlareSolverrStatus(res?.success ? 'ready' : 'failed')
-    } catch {
-      setFlareSolverrStatus('failed')
-    }
-  }, [])
-
   // ── Initialization effects ──
   useEffect(() => {
     refreshDownloads().catch(console.error)
@@ -197,10 +185,8 @@ function App() {
       if (settings?.destination_folder) setDestFolder(settings.destination_folder)
     }).catch(() => {})
 
-    // FlareSolverr init
+    // Downloads listener
     ea?.onDownloadsUpdated?.(() => refreshDownloads().catch(console.error))
-    ea?.onFlareSolverrReady?.(() => setFlareSolverrStatus('ready'))
-    ea?.flaresolverrStatus?.().then((res: any) => { if (res?.status) setFlareSolverrStatus(res.status as any) }).catch(() => {})
 
     // Search progress listener
     const cleanupSearch = ea?.onSearchProgress?.((progress: any) => {
@@ -208,7 +194,10 @@ function App() {
       const activeTabId = store.activeTabId
       if (!activeTabId) return
       if (progress.type === 'engine_start') store.setCurrentEngine(activeTabId, progress.engine)
-      else if (progress.type === 'engine_results' && progress.results?.length > 0) store.appendResults(activeTabId, progress.results)
+      else if (progress.type === 'engine_results' && progress.results?.length > 0) {
+        // Tag each result with its engine so the store can keep the Latino engine on top
+        store.appendResults(activeTabId, progress.results.map((r: any) => ({ ...r, engine: progress.engine })))
+      }
     })
 
     const cleanupSearchError = ea?.onSearchError?.((error: string) => {
@@ -246,8 +235,6 @@ function App() {
         onNavChange={setActiveNav}
         onSettingsOpen={() => setShowSettings(true)}
         downloadCount={downloads.length}
-        flaresolverrStatus={flaresolverrStatus}
-        onFlareSolverrRestart={handleFlareSolverrRestart}
         appVersion={appVersion}
       />
 
@@ -290,6 +277,17 @@ function App() {
               <SearchTabsBar />
               <div className="flex-1 overflow-auto glass-panel p-4">
                 <SearchTab onDownloadAdded={refreshDownloads} showToast={showToast} service={downloadService} serviceAvailable={isServiceAvailable} />
+              </div>
+            </div>
+          )}
+
+          {/* ── WATCHLIST (automation) ── */}
+          {activeNav === 'watchlist' && (
+            <div className="h-full flex flex-col space-y-6 animate-fade-in">
+              <div className="glass-panel flex-1 overflow-auto p-4">
+                <Suspense fallback={<div className="text-text-muted font-mono text-sm p-4">Loading watchlist...</div>}>
+                  <WatchlistView showToast={showToast} onActivity={refreshDownloads} />
+                </Suspense>
               </div>
             </div>
           )}

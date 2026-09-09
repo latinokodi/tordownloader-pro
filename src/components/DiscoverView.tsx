@@ -102,7 +102,9 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
         }
       } else if (progress.type === 'provider_results') {
         if (progress.results?.length > 0) {
-          appendProviderResults(progress.results)
+          // Tag each result with its provider so the store can keep
+          // latino providers (TCL/Cinecalidad/Comet) on top
+          appendProviderResults(progress.results.map((r: any) => ({ ...r, provider: progress.provider })))
         }
       } else if (progress.type === 'done') {
         setProviderLoading(false)

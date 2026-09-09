@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useSearchTabsStore } from '../store/searchTabs'
 import type { SearchResult } from '../store/searchTabs'
 import { api } from '../hooks/useApi'
@@ -10,6 +11,8 @@ interface Props {
   service?: string
   serviceAvailable?: boolean
 }
+
+type MediaType = 'movie' | 'series'
 
 function formatSize(size: string | null): string {
   if (!size) return '?'
@@ -30,12 +33,29 @@ function buildMagnetFromHash(infoHash: string, title: string | null): string {
   return magnet
 }
 
-async function handleDownload(r: SearchResult, onAdded: () => void, showToast: Props['showToast'], t: ReturnType<typeof useT>, service: string = 'torbox') {
+// Default media type for a result card, guessed from the release title.
+// The user can always flip it per card before clicking acquire.
+function detectType(title: string | null): MediaType {
+  const t = (title || '').toLowerCase()
+  if (/\bs\d{1,2}\s*e\d{1,2}\b/.test(t)) return 'series' // S01E01
+  if (/\bseason\s+\d+\b/.test(t)) return 'series' // "Season 2"
+  if (/\b\d{1,2}x\d{1,2}\b/.test(t)) return 'series' // 1x01
+  if (/\bcap[íi]tulo\b|\bcap\s*\d+\b/.test(t)) return 'series' // "Cap.305"
+  if (/\b(temporada|complete series|serie completa)\b/.test(t)) return 'series'
+  return 'movie'
+}
+
+async function handleDownload(r: SearchResult, type: MediaType, onAdded: () => void, showToast: Props['showToast'], t: ReturnType<typeof useT>, service: string = 'torbox') {
   const link = r.link
 
   const trErr = (msg: string) => {
     if (/infringing.file/i.test(msg)) return t.downloadCard.infringingFile
     return msg
+  }
+
+  const onOk = (res: any) => {
+    if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
+    else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
   }
 
   if (link && link.startsWith('magnet:')) {
@@ -44,9 +64,9 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
         magnet: link,
         info_hash: r.info_hash,
         service,
+        type,
       })
-      if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
-      else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
+      onOk(res)
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : t.search.downloadError, 'error')
     }
@@ -55,9 +75,8 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
 
   if (link && link.endsWith('.torrent')) {
     try {
-      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service })
-      if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
-      else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
+      const res = await api<{ success: boolean; detail?: string }>('/downloads/add-torrent-url', 'POST', { url: link, service, type })
+      onOk(res)
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : t.search.downloadError, 'error')
     }
@@ -71,9 +90,9 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
         magnet,
         info_hash: r.info_hash,
         service,
+        type,
       })
-      if (res.success) { showToast(t.search.downloadAdded, 'success'); onAdded() }
-      else { showToast(`${t.toasts.error}: ${trErr((res as any).detail || (res as any).error || t.toasts.unknownError)}`, 'error') }
+      onOk(res)
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : t.search.downloadError, 'error')
     }
@@ -81,6 +100,59 @@ async function handleDownload(r: SearchResult, onAdded: () => void, showToast: P
   }
 
   showToast(t.search.noDirectLink, 'error')
+}
+
+function TypeToggle({ value, onChange }: { value: MediaType; onChange: (t: MediaType) => void }) {
+  const btn = (label: string, val: MediaType) => (
+    <button
+      type="button"
+      key={val}
+      onClick={() => onChange(val)}
+      className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors whitespace-nowrap ${
+        value === val
+          ? 'bg-accent/20 border-accent text-accent'
+          : 'bg-transparent border-border text-text-dim hover:text-text hover:border-text-dim'
+      }`}
+      title={val === 'movie' ? 'Save as movie (Jellyfin movies folder)' : 'Save as series (Jellyfin TV folder)'}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className="flex gap-1">
+      {btn('Movie', 'movie')}
+      {btn('Series', 'series')}
+    </div>
+  )
+}
+
+function ResultCard({ r, onDownloadAdded, showToast, service, serviceAvailable }: Props & { r: SearchResult }) {
+  const t = useT()
+  const [type, setType] = useState<MediaType>(() => detectType(r.title))
+  return (
+    <div className="glass-panel p-4 flex justify-between items-center transition-colors hover:border-accent">
+      <div className="flex-1 overflow-hidden pr-4">
+        <div className="font-bold text-text-heading truncate" title={r.title ?? ''}>{r.title}</div>
+        <div className="flex gap-4 text-xs font-mono text-text-muted mt-2 uppercase tracking-wide items-center">
+          <span className="text-success">{t.downloadCard.seeds} {r.seeders}</span>
+          <span className="text-text-main">PEERS {r.peers}</span>
+          <span>{formatSize(r.size)}</span>
+          <span className="text-accent truncate">{r.indexer}</span>
+          <span className="ml-auto">
+            <TypeToggle value={type} onChange={setType} />
+          </span>
+        </div>
+      </div>
+      <button
+        className="btn btn-accent whitespace-nowrap"
+        disabled={(!r.link && !r.info_hash) || !serviceAvailable}
+        title={!serviceAvailable ? 'No token configured for selected service' : undefined}
+        onClick={() => handleDownload(r, type, onDownloadAdded, showToast, t, service)}
+      >
+        {(!r.link && !r.info_hash) ? t.search.unavailable : !serviceAvailable ? 'No token' : t.search.acquire}
+      </button>
+    </div>
+  )
 }
 
 export function SearchTab({ onDownloadAdded, showToast, service, serviceAvailable }: Props) {
@@ -156,25 +228,14 @@ export function SearchTab({ onDownloadAdded, showToast, service, serviceAvailabl
         </div>
       )}
       {tab.results!.map((r: SearchResult, i: number) => (
-        <div key={i} className="glass-panel p-4 flex justify-between items-center transition-colors hover:border-accent">
-          <div className="flex-1 overflow-hidden pr-4">
-            <div className="font-bold text-text-heading truncate" title={r.title ?? ''}>{r.title}</div>
-            <div className="flex gap-4 text-xs font-mono text-text-muted mt-2 uppercase tracking-wide">
-              <span className="text-success">{t.downloadCard.seeds} {r.seeders}</span>
-              <span className="text-text-main">PEERS {r.peers}</span>
-              <span>{formatSize(r.size)}</span>
-              <span className="text-accent truncate">{r.indexer}</span>
-            </div>
-          </div>
-          <button
-            className="btn btn-accent whitespace-nowrap"
-            disabled={(!r.link && !r.info_hash) || !serviceAvailable}
-            title={!serviceAvailable ? 'No token configured for selected service' : undefined}
-            onClick={() => handleDownload(r, onDownloadAdded, showToast, t, service)}
-          >
-            {(!r.link && !r.info_hash) ? t.search.unavailable : !serviceAvailable ? 'No token' : t.search.acquire}
-          </button>
-        </div>
+        <ResultCard
+          key={i}
+          r={r}
+          onDownloadAdded={onDownloadAdded}
+          showToast={showToast}
+          service={service}
+          serviceAvailable={serviceAvailable}
+        />
       ))}
     </div>
   )

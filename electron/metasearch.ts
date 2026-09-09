@@ -1,18 +1,14 @@
 /**
- * metasearch.ts — Native multi-engine torrent search using qBittorrent plugins.
+ * metasearch.ts — Multi-engine torrent search for the headless web server.
  *
- * Replaces Jackett + FlareSolverr Docker stack with a self-contained solution:
- * spawns a Python runner that loads qBittorrent search plugins, aggregates
- * results across engines, deduplicates, and returns JSON.
- *
- * No external services, no Docker, no separate installs.
- * Only dependency: Python 3 with `cloudscraper` (auto-installed if missing).
+ * Spawns meta-search.py, which queries Jackett (Torznab API — FlareSolverr
+ * is handled by Jackett itself) plus the latino providers (Cinecalidad /
+ * Comet / TCL, resolved via TMDB), aggregates and deduplicates the results.
  */
 
 import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import { app } from 'electron'
-import { getCFServerPort } from './cf-fetcher'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -28,11 +24,29 @@ export interface MetaResult {
 
 // ── Paths ──────────────────────────────────────────────
 
+function isLinux(): boolean {
+  return process.platform === 'linux'
+}
+
+function getDataDir(): string {
+  if (process.env.TDP_DATA_DIR) return process.env.TDP_DATA_DIR
+  if (typeof app !== 'undefined' && app && typeof app.getPath === 'function') {
+    return app.getPath('userData')
+  }
+  return require('os').homedir() + '/.tordownloader-pro'
+}
+
 function getRunnerPath(): string {
   // In dev: use Python to run the .py script directly
   // In prod (packaged): use the bundled PyInstaller .exe (no Python needed)
+  if (isLinux()) {
+    // Headless Linux (web server): meta-search.py = Jackett Torznab +
+    // latino providers (Cinecalidad/Comet/TCL). Always run the .py with
+    // the configured python.
+    return path.join(__dirname, '..', 'electron', 'meta-search.py')
+  }
   if (process.env.VITE_DEV_SERVER_URL) {
-    return path.join(__dirname, '..', 'electron', 'qbit-plugins', 'qbit-runner.py')
+    return path.join(__dirname, '..', 'electron', 'meta-search.py')
   }
   return path.join(process.resourcesPath || app.getAppPath(), 'qbit-plugins', 'qbit-runner.exe')
 }
@@ -40,17 +54,14 @@ function getRunnerPath(): string {
 function getRunnerCommand(): { cmd: string; args: string[] } {
   const runnerPath = getRunnerPath()
   if (runnerPath.endsWith('.py')) {
-    return { cmd: 'python', args: [runnerPath] }
+    const py = process.env.TDP_PYTHON || (isLinux() ? 'python3' : 'python')
+    return { cmd: py, args: [runnerPath] }
   }
   return { cmd: runnerPath, args: [] }
 }
 
-function getCFCookiePath(): string {
-  return path.join(app.getPath('userData'), 'cf_cookies.json')
-}
-
 function getUserPluginsDir(): string {
-  return path.join(app.getPath('userData'), 'plugins', 'engines')
+  return path.join(getDataDir(), 'plugins', 'engines')
 }
 
 // ── Auto-install cloudscraper ──────────────────────────
@@ -61,13 +72,14 @@ function ensureDeps(): Promise<boolean> {
   if (_ensureDepsPromise) return _ensureDepsPromise
 
   // In production, the .exe bundles Python + cloudscraper — nothing to check
-  if (!process.env.VITE_DEV_SERVER_URL) {
+  if (!process.env.VITE_DEV_SERVER_URL && !isLinux()) {
     _ensureDepsPromise = Promise.resolve(true)
     return _ensureDepsPromise
   }
 
   _ensureDepsPromise = new Promise<boolean>((resolve) => {
-    const check = spawn('python', ['-c', 'import cloudscraper'], {
+    const py = process.env.TDP_PYTHON || (isLinux() ? 'python3' : 'python')
+    const check = spawn(py, ['-c', 'import cloudscraper'], {
       windowsHide: true,
     })
 
@@ -78,7 +90,7 @@ function ensureDeps(): Promise<boolean> {
       }
 
       // cloudscraper not installed — try pip install
-      const install = spawn('python', ['-m', 'pip', 'install', '--quiet', 'cloudscraper'], {
+      const install = spawn(py, ['-m', 'pip', 'install', '--quiet', 'cloudscraper'], {
         windowsHide: true,
       })
 
@@ -148,12 +160,7 @@ export class MetaSearch {
       const proc: ChildProcess = spawn(cmd, [...args, query], {
         windowsHide: true,
         timeout: SEARCH_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          CF_COOKIE_FILE: getCFCookiePath(),
-          ELECTRON_CF_PORT: String(getCFServerPort()),
-          USER_PLUGINS_DIR: getUserPluginsDir(),
-        },
+        env: { ...process.env },
       })
 
       const timer = setTimeout(() => {
@@ -221,12 +228,7 @@ export class MetaSearch {
       const proc: ChildProcess = spawn(cmd, [...args, '--stream', query], {
         windowsHide: true,
         timeout: SEARCH_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          CF_COOKIE_FILE: getCFCookiePath(),
-          ELECTRON_CF_PORT: String(getCFServerPort()),
-          USER_PLUGINS_DIR: getUserPluginsDir(),
-        },
+        env: { ...process.env },
       })
 
       const timer = setTimeout(() => {

@@ -4,8 +4,6 @@ import { spawn } from 'child_process'
 import fs from 'fs'
 import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, Settings } from './db'
 import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
-import { startFlareSolverr, getFlareSolverrUrl, stopFlareSolverr, restartFlareSolverr, getFlareSolverrStatus } from './flaresolverr'
-import { startCFServer, getCFServerPort, stopCFServer } from './cf-fetcher'
 import { checkPluginsForUpdates, updatePlugins } from './plugin-updater'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
@@ -113,19 +111,6 @@ app.whenReady().then(async () => {
   // Defer update check — let the window render first so IPC listeners are registered
   setTimeout(() => checkForUpdates(), 3000)
 
-  // Start local HTTP bridge for Python plugins to fetch CF-protected pages
-  // through Electron's native Chromium (handles Cloudflare natively)
-  startCFServer()
-
-  // Start FlareSolverr for Cloudflare bypass (bundled, no Docker)
-  startFlareSolverr().then(() => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('flaresolverr-ready')
-    }
-  }).catch(err =>
-    console.warn('[FlareSolverr] Start failed (non-fatal):', err)
-  )
-  
   // Start the background worker for Torbox & local downloads
   startWorker(mainWindow)
 
@@ -135,8 +120,6 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  stopFlareSolverr()
-  stopCFServer()
   app.quit()
 })
 
@@ -927,16 +910,4 @@ ipcMain.handle('install-update', () => {
 ipcMain.handle('dismiss-update', () => {
   dismissUpdate()
   return { success: true }
-})
-
-// ── FlareSolverr ──
-ipcMain.handle('flaresolverr-restart', async () => {
-  const ok = await restartFlareSolverr()
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('flaresolverr-ready')
-  }
-  return { success: ok }
-})
-ipcMain.handle('flaresolverr-status', () => {
-  return { status: getFlareSolverrStatus() }
 })

@@ -195,18 +195,43 @@ export class TorboxAPI {
     });
   }
 
-  async controlTorrent(torrentId: string, operation: string): Promise<any> {
-    const data = new URLSearchParams();
-    data.append('torrent_id', torrentId);
-    data.append('operation', operation);
+  /**
+   * Guarantee a boolean `success` field on any TorBox payload.
+   * TorBox (FastAPI) answers a malformed request with a bare `{detail:[...]}`
+   * validation body and NO `success` key, which silently defeats callers doing
+   * `String(result.success) === 'true'` and made deletes fail as no-ops.
+   */
+  static normalizeApiResult(result: any): any {
+    if (!result || typeof result !== 'object') {
+      return { success: false, error: 'InvalidResponse', detail: String(result) };
+    }
+    if (typeof result.success !== 'undefined') return result;
+    const detail = (result as any).detail;
+    const msg = Array.isArray(detail)
+      ? detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ')
+      : typeof detail === 'string'
+        ? detail
+        : JSON.stringify(detail ?? result);
+    return { success: false, error: 'ValidationError', detail: msg, raw: result };
+  }
 
-    return this.request({
+  async controlTorrent(torrentId: string, operation: string): Promise<any> {
+    // TorBox expects a JSON body here; the old urlencoded form is rejected with
+    // a 422 validation error. Operation is lower-cased because callers pass
+    // both 'Delete' and 'delete'.
+    const raw = String(torrentId ?? '').trim();
+    const numericId = Number(raw);
+    const result = await this.request({
       method: 'POST',
       url: '/torrents/controltorrent',
-      data,
+      data: {
+        torrent_id: Number.isFinite(numericId) && raw !== '' ? numericId : raw,
+        operation: String(operation ?? '').trim().toLowerCase(),
+      },
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Content-Type': 'application/json'
       }
     });
+    return TorboxAPI.normalizeApiResult(result);
   }
 }

@@ -8,6 +8,7 @@ export interface SearchResult {
   link: string | null
   indexer: string
   info_hash: string | null
+  engine?: string
 }
 
 export interface SearchTab {
@@ -79,7 +80,13 @@ export const useSearchTabsStore = create<SearchTabsState>((set, get) => ({
           seen.set(key, r)
         }
       }
-      const merged = [...seen.values()].sort((a, b) => b.seeders - a.seeders)
+      // Latino engine first, then by seeders within each group
+      const merged = [...seen.values()].sort((a, b) => {
+        const aLat = a.engine === 'Latino' ? 0 : 1
+        const bLat = b.engine === 'Latino' ? 0 : 1
+        if (aLat !== bLat) return aLat - bLat
+        return b.seeders - a.seeders
+      })
       return {
         tabs: { ...s.tabs, [id]: { ...tab, results: merged } },
       }

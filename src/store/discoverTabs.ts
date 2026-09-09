@@ -43,7 +43,11 @@ export interface DiscoverResult {
   link: string
   indexer: string
   info_hash: string | null
+  provider?: string
 }
+
+// Latino providers always float to the top of the results list
+const LATINO_PROVIDERS = new Set(['TCL', 'Cinecalidad', 'Comet'])
 
 interface DiscoverState {
   // TMDB lists
@@ -139,7 +143,13 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
         seen.set(key, r)
       }
     }
-    set({ providerResults: [...seen.values()].sort((a, b) => b.seeders - a.seeders) })
+    set({ providerResults: [...seen.values()].sort((a, b) => {
+      // Latino providers first, then by seeders within each group
+      const aLat = LATINO_PROVIDERS.has(a.provider || '') ? 0 : 1
+      const bLat = LATINO_PROVIDERS.has(b.provider || '') ? 0 : 1
+      if (aLat !== bLat) return aLat - bLat
+      return b.seeders - a.seeders
+    }) })
   },
 
   setCurrentProvider: (provider) => set({ currentProvider: provider }),

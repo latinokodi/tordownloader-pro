@@ -21,6 +21,7 @@ Output: JSON lines (stream mode) or single JSON array (batch mode).
 import sys
 import json
 import re
+import os
 import base64
 import urllib.request
 import urllib.parse
@@ -136,15 +137,24 @@ def format_result(title, magnet, info_hash, size='', source=''):
 # ── IMDB / Cinemeta / Trakt metadata resolution ─────────
 
 def resolve_metadata(imdb_id, media_type):
-    """Resolve title + year from IMDB → Cinemeta → Trakt."""
+    """
+    Resolve title + year + TMDB id from IMDB → Cinemeta → Trakt → TMDB.
+
+    Returns {'titles': [...], 'year': int|None, 'tmdb_id': str|None}.
+    When a TMDB API key is available (env TMDB_API_KEY), Spanish titles
+    are added via TMDB's find-by-imdb with language=es — the hacktorrent
+    search matches Spanish titles, so this is what makes the TCL provider
+    find content like "Avatar: El camino del agua".
+    """
     titles = set()
     year = None
     primary_title = None
+    tmdb_id = None
 
-    # Step 1: IMDB Suggestion API
+    # Step 1: IMDB Suggestion API (mandatory 'x/' path segment)
     try:
         data = http_get_json(
-            f'{IMDB_SUGGESTION}/{imdb_id}.json',
+            f'{IMDB_SUGGESTION}/x/{imdb_id}.json',
             timeout=6,
         )
         items = data.get('d', [])
@@ -161,42 +171,74 @@ def resolve_metadata(imdb_id, media_type):
     except Exception:
         pass
 
-    # Step 2: Cinemeta fallback
+    # Step 2: Cinemeta — TMDB id + title fallback
+    try:
+        cm_type = 'series' if media_type == 'series' else 'movie'
+        data = http_get_json(f'{CINEMETA_URL}/{cm_type}/{imdb_id}.json', timeout=6)
+        meta = data.get('meta', {})
+        if meta.get('moviedb_id'):
+            tmdb_id = str(meta['moviedb_id'])
+        if not primary_title and meta.get('name'):
+            primary_title = meta['name']
+            titles.add(meta['name'])
+            if meta.get('year'):
+                y = str(meta['year'])
+                m = re.search(r'\d{4}', y)
+                if m:
+                    year = int(m.group())
+    except Exception:
+        pass
+
+    # Step 3: TMDB (when a key is available) — Spanish titles + authoritative TMDB id.
+    # 'es' gives Spain titles, 'es-MX' gives LatAm titles — the hacktorrent site
+    # uses LatAm titles ("Avatar: El camino del agua"), so both are queried.
+    tmdb_key = os.environ.get('TMDB_API_KEY', '')
+    if tmdb_key:
+        for lang in ('es', 'es-MX'):
+            try:
+                data = http_get_json(
+                    f'https://api.themoviedb.org/3/find/{imdb_id}'
+                    f'?external_source=imdb_id&language={lang}&api_key={tmdb_key}',
+                    timeout=6,
+                )
+                results = data.get('movie_results') or data.get('tv_results') or []
+                if not results:
+                    continue
+                item = results[0]
+                for f in ('title', 'original_title', 'name', 'original_name'):
+                    v = item.get(f)
+                    if v:
+                        titles.add(v)
+                if item.get('id'):
+                    tmdb_id = str(item['id'])
+                date = item.get('release_date') or item.get('first_air_date') or ''
+                m = re.search(r'\d{4}', date)
+                if m:
+                    year = int(m.group())
+            except Exception:
+                pass
+
+    # Step 4: Trakt aliases (best effort — may 403 without an API key)
     if not primary_title:
         try:
-            cm_type = 'series' if media_type == 'series' else 'movie'
-            data = http_get_json(f'{CINEMETA_URL}/{cm_type}/{imdb_id}.json', timeout=6)
-            meta = data.get('meta', {})
-            if meta.get('name'):
-                primary_title = meta['name']
-                titles.add(meta['name'])
-                if meta.get('year'):
-                    y = str(meta['year'])
-                    m = re.search(r'\d{4}', y)
-                    if m:
-                        year = int(m.group())
+            trakt_type = 'shows' if media_type == 'series' else 'movies'
+            data = http_get_json(
+                f'{TRAKT_URL}/{trakt_type}/{imdb_id}/aliases',
+                timeout=5,
+            )
+            for alias in data:
+                if alias.get('title'):
+                    titles.add(alias['title'])
         except Exception:
             pass
 
-    if not primary_title:
+    if not primary_title and not titles:
         return None
-
-    # Step 3: Trakt aliases
-    try:
-        trakt_type = 'shows' if media_type == 'series' else 'movies'
-        data = http_get_json(
-            f'{TRAKT_URL}/{trakt_type}/{imdb_id}/aliases',
-            timeout=5,
-        )
-        for alias in data:
-            if alias.get('title'):
-                titles.add(alias['title'])
-    except Exception:
-        pass
 
     return {
         'titles': list(titles),
         'year': year,
+        'tmdb_id': tmdb_id,
     }
 
 
@@ -260,20 +302,165 @@ def tcl_series_detail(slug, content_type):
         return None
 
 
+def _rot13(s):
+    """ROT13 — acortalink encodes the site URL with it (linkser)."""
+    out = []
+    for ch in s:
+        if 'a' <= ch <= 'z':
+            out.append(chr((ord(ch) - ord('a') + 13) % 26 + ord('a')))
+        elif 'A' <= ch <= 'Z':
+            out.append(chr((ord(ch) - ord('A') + 13) % 26 + ord('A')))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+# Cached verdict for the Salted__ scheme: once we know the site's redirect
+# chain resolves (or not), don't repeat the 4-request dance for every download.
+_salted_resolvable = None  # None=unknown, True/False
+
+
+def _acortalink_rphp_fetch(l_param, timeout=12):
+    """Fetch r.php?l=<param>; return (magnet_or_None, redirect_target_or_None)."""
+    try:
+        resolve_url = f'https://acortalink.net/r.php?l={urllib.parse.quote(l_param, safe="")}'
+        html = http_get(resolve_url, timeout=timeout, referer=f'{TCL_HOST}/')
+        matches = MAGNET_RE.findall(html)
+        if matches:
+            return matches[0], None
+        # Current site serves a JS redirect page instead of the magnet:
+        # window.location = "<target>"  (also mirrored in the AQUI <a href>)
+        m = (re.search(r'window\.location\s*=\s*"([^"\s]+)"', html)
+             or re.search(r'<a\s+href="([^"\s]+)"', html))
+        if m:
+            return None, m.group(1)
+        return None, None
+    except Exception:
+        return None, None
+
+
+def _acortalink_salted_flow(blob, timeout=12):
+    """
+    Replicate the current acortalink resolution flow for OpenSSL "Salted__"
+    encrypted links:
+
+      s.php?i=<blob>  ->  POST / (linkser, session)  ->  POST /check.php "c"
+      ->  r.php?l=<blob>  ->  follow the JS redirect target  ->  magnet
+
+    Returns the magnet string or None. Uses a cookie jar so the session
+    state (PHPSESSID / PHPINFO / countdown cookie) carries through.
+    """
+    global _salted_resolvable
+    if _salted_resolvable is False:
+        return None
+
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener.addheaders = [
+        ('User-Agent', UA),
+        ('Referer', f'{TCL_HOST}/'),
+    ]
+
+    def get(url, referer=None):
+        headers = dict(opener.addheaders)
+        if referer:
+            headers['Referer'] = referer
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                return resp.read().decode('utf-8', errors='replace')
+        except Exception:
+            return ''
+
+    def post(url, data, referer=None):
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        if referer:
+            headers['Referer'] = referer
+        req = urllib.request.Request(url, data=data.encode(), headers=headers)
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                return resp.read().decode('utf-8', errors='replace')
+        except Exception:
+            return ''
+
+    qblob = urllib.parse.quote(blob, safe='')
+    linkser = _rot13('https://hacktorrent.cc')
+
+    # 1. s.php seeds the session (PHPSESSID + PHPINFO cookies)
+    get(f'https://acortalink.net/s.php?i={qblob}', referer=f'{TCL_HOST}/')
+
+    # 2. The protector page (mirrors the auto-submit form)
+    post('https://acortalink.net/', f'linkser={linkser}',
+         referer=f'https://acortalink.net/s.php?i={qblob}')
+
+    # 3. Mark the countdown as done (the page JS POSTs "c" to /check.php)
+    post('https://acortalink.net/check.php', 'c', referer='https://acortalink.net/')
+
+    # 4. r.php -> JS redirect target
+    magnet, target = _acortalink_rphp_fetch(blob, timeout)
+    if magnet:
+        _salted_resolvable = True
+        return magnet
+
+    if not target:
+        _salted_resolvable = False
+        print(f'[acortalink] Salted link: r.php gave no magnet/redirect for {blob[:24]}...', file=sys.stderr)
+        return None
+
+    # 5. Follow the redirect target (a path like /<blob>) with the session
+    if target.startswith('http'):
+        target_url = target
+    else:
+        target_url = 'https://acortalink.net/' + target.lstrip('/')
+    try:
+        html = get(target_url, referer='https://acortalink.net/r.php')
+        matches = MAGNET_RE.findall(html)
+        if matches:
+            _salted_resolvable = True
+            return matches[0]
+    except Exception:
+        pass
+
+    _salted_resolvable = False
+    print(f'[acortalink] Salted link unresolved: {target_url[:70]} '
+          f'(OpenSSL-encrypted; site did not serve a magnet)', file=sys.stderr)
+    return None
+
+
 def resolve_acortalink(acorta_url):
-    """Resolve acortalink.net short URL to magnet."""
+    """
+    Resolve an acortalink.net short URL to a magnet link.
+
+    Two schemes:
+      1. PLAIN (legacy) — the 'i' param base64-decodes to a plain URL.
+         r.php?l=<url> historically returned HTML containing the magnet.
+      2. SALTED (current) — the 'i' param base64-decodes to an OpenSSL
+         "Salted__" AES blob. Resolution requires the session flow
+         implemented in _acortalink_salted_flow().
+    """
     try:
         parsed = urllib.parse.urlparse(acorta_url)
         qs = urllib.parse.parse_qs(parsed.query)
         i_param = qs.get('i', [''])[0]
         if not i_param:
             return None
-        # 'i' param is base64-encoded 'l' param
-        l_param = base64.b64decode(i_param).decode('utf-8', errors='replace')
-        resolve_url = f'https://acortalink.net/r.php?l={l_param}'
-        html = http_get(resolve_url, timeout=10, referer=f'{TCL_HOST}/')
-        matches = MAGNET_RE.findall(html)
-        return matches[0] if matches else None
+
+        try:
+            decoded = base64.b64decode(i_param).decode('utf-8', errors='replace')
+        except Exception:
+            return None
+
+        # Scheme 1: plain URL
+        if decoded.startswith('http'):
+            magnet, _ = _acortalink_rphp_fetch(decoded)
+            return magnet
+
+        # Scheme 2: OpenSSL-encrypted blob ("U2FsdGVkX1" = base64 of "Salted__")
+        if decoded.startswith('U2FsdGVkX1'):
+            return _acortalink_salted_flow(decoded)
+
+        return None
     except Exception:
         return None
 
@@ -289,6 +476,7 @@ def provider_tcl(imdb_id, media_type, season=None, episode=None):
 
     titles = meta['titles']
     year = meta['year']
+    tmdb_id = meta.get('tmdb_id')
 
     # Content type mapping (TCL uses Spanish types)
     if media_type == 'movie':
@@ -296,23 +484,53 @@ def provider_tcl(imdb_id, media_type, season=None, episode=None):
     else:
         content_types = ['serie', 'anime']
 
-    # Try each title until we find a match
+    # Try each title until we find a match. The site's search matches
+    # Spanish titles best, so the resolved titles set now includes TMDB
+    # Spanish titles (when a TMDB key is configured). Match priority:
+    #   1. TMDB id equality (bulletproof when both sides have it)
+    #   2. original_title (English) exact match
+    #   3. localized title exact match
+    #   4. year + meaningful token overlap (loose fallback)
     match = None
     active_ct = None
+    normalized_titles = {normalize_title(t) for t in titles}
     for ct in content_types:
         for title in titles:
             api_results = tcl_search_api(title, ct)
-            normalized_titles = {normalize_title(t) for t in titles}
             for item in api_results:
-                item_title = HTML_TAG_RE.sub('', item.get('title', '')).strip()
-                if normalize_title(item_title) not in normalized_titles:
-                    continue
-                item_year = str(item.get('year', ''))
-                if ct == 'pelicula' and year and item_year and item_year != str(year):
-                    continue
-                match = item
-                active_ct = ct
-                break
+                item_title = HTML_TAG_RE.sub('', str(item.get('title', '') or '')).strip()
+                item_orig = HTML_TAG_RE.sub('', str(item.get('original_title', '') or '')).strip()
+                item_tmdb = str(item.get('tmdb_id', '') or '')
+                item_year = str(item.get('year', '') or '')
+
+                # 1. TMDB id match
+                if tmdb_id and item_tmdb and item_tmdb == tmdb_id:
+                    match = item
+                    active_ct = ct
+                    break
+
+                # 2. original_title exact match (English titles)
+                if item_orig and normalize_title(item_orig) in normalized_titles:
+                    match = item
+                    active_ct = ct
+                    break
+
+                # 3. localized title exact match
+                if item_title and normalize_title(item_title) in normalized_titles:
+                    match = item
+                    active_ct = ct
+                    break
+
+                # 4. year + token overlap fallback
+                if year and item_year and item_year == str(year):
+                    norm_item = normalize_title(item_title)
+                    norm_orig = normalize_title(item_orig)
+                    toks = {w for w in (norm_item + ' ' + norm_orig).split() if len(w) > 3}
+                    known = {w for w in ' '.join(normalized_titles).split() if len(w) > 3}
+                    if toks and (toks & known):
+                        match = item
+                        active_ct = ct
+                        break
             if match:
                 break
         if match:
@@ -383,7 +601,7 @@ def provider_cinecalidad(imdb_id, media_type, season=None, episode=None):
 
     url = f'{CINECALIDAD_URL}/{path}'
     try:
-        data = http_get_json(url, timeout=8)
+        data = http_get_json(url, timeout=20)
         streams = data.get('streams', [])
     except Exception:
         return results
@@ -430,7 +648,7 @@ def provider_comet(imdb_id, media_type, season=None, episode=None):
 
     url = f'{COMET_BASE}/{path}'
     try:
-        data = http_get_json(url, timeout=15)
+        data = http_get_json(url, timeout=25)
         streams = data.get('streams', [])
     except Exception:
         return results
@@ -438,7 +656,12 @@ def provider_comet(imdb_id, media_type, season=None, episode=None):
     for s in streams:
         info_hash = (s.get('infoHash') or '').lower()
         direct_url = s.get('url', '')
-        description = s.get('description', '')
+        description = s.get('description', '') or ''
+
+        # Skip obsolete-config / error marker streams (they link to the addon homepage)
+        marker = (s.get('name', '') + ' ' + description).lower()
+        if 'obsolete configuration' in marker or 're-configure' in marker:
+            continue
 
         # Filename
         filename = (s.get('behaviorHints', {}).get('filename')

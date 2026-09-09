@@ -4,7 +4,10 @@ import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload,
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
+import { eventBus } from './event-bus';
+import { computeDestination, safeSegment } from './media-layout';
 
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
@@ -104,7 +107,7 @@ export function startWorker(mainWindow: BrowserWindow | null) {
       }
 
       if (mainWindow) {
-        mainWindow.webContents.send('downloads-updated');
+        eventBus.emit('downloads-updated');
       }
     } catch (err) {
       console.error('Worker polling loop failed', err);
@@ -146,11 +149,11 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
           console.log(`[Worker] Queued TorBox download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
-          runTorboxDownload(tid, dlData, settings.destination_folder, settings.torbox_token, mainWindow).catch(err => {
+          runTorboxDownload(tid, dlData, settings, settings.torbox_token, mainWindow).catch(err => {
             console.error(`Local download failed for ${tid}:`, err);
             updateDownload(tid, { local_status: `failed: ${err.message}` });
             activeLocalDownloads.delete(tid);
-            if (mainWindow) mainWindow.webContents.send('downloads-updated');
+            eventBus.emit('downloads-updated');
           });
         }
       }
@@ -238,11 +241,11 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
           console.log(`[Worker] Queued RD download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
-          runRealdebridDownload(tid, dlData, settings.destination_folder, settings.realdebrid_token, mainWindow).catch(err => {
+          runRealdebridDownload(tid, dlData, settings, settings.realdebrid_token, mainWindow).catch(err => {
             console.error(`RD download failed for ${tid}:`, err);
             updateDownload(tid, { local_status: `failed: ${err.message}` });
             activeLocalDownloads.delete(tid);
-            if (mainWindow) mainWindow.webContents.send('downloads-updated');
+            eventBus.emit('downloads-updated');
           });
         }
       }
@@ -255,14 +258,22 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
   }
 }
 
-async function runTorboxDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
+async function runTorboxDownload(tid: string, dlData: any, settings: any, token: string, mainWindow: BrowserWindow | null) {
   try {
-    if (!destRoot || !destRoot.trim()) {
-      throw new Error('Destination folder is not configured');
+    const rec = getDownloadByTorboxId(tid);
+    const type: 'movie' | 'series' | '' = rec?.type || '';
+    let destFolder: string;
+    if (rec?.dest_folder) {
+      // Automation engine already decided the exact destination at grab time —
+      // never re-derive it from the release name (names lie, folders don't).
+      destFolder = rec.dest_folder;
+    } else {
+      const { root, folder } = await computeDestination(settings, dlData.name || tid, type);
+      if (!root) throw new Error('Destination folder is not configured');
+      destFolder = path.join(root, ...folder.split('/').map(safeSegment));
     }
 
     const tb = new TorboxAPI(token);
-    const destFolder = destRoot;
     safeMkdirSync(destFolder);
 
     let files = dlData.files || [];
@@ -291,12 +302,19 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
       const fileInfo = files[idx];
       const fileId = fileInfo.id;
       const fileName = fileInfo.name || fileInfo.path || `file_${idx}`;
-      const safeRelPath = getSafeRelativePath(fileName, `file_${idx}`);
-      const filePath = path.join(destFolder, safeRelPath);
-      const expectedSize = getFileSize(fileInfo);
 
-      // Ensure subdirectory exists
-      safeMkdirSync(path.dirname(filePath));
+      // GUARD: skip non-video files (.exe/.vbs/.url/.nfo/.txt — malware en torrents falsos)
+      const lowerName = fileName.toLowerCase();
+      const isVideo = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i.test(lowerName);
+      const isSub = /\.(srt|vtt|ass|ssa|sub)$/i.test(lowerName);
+      if (!isVideo && !isSub) {
+        console.log(`[Worker] Skip non-video file: ${fileName}`);
+        continue;
+      }
+
+      // Flatten: place every file directly in the type folder (radarr/sonarr style).
+      const filePath = path.join(destFolder, safeSegment(path.basename(fileName)));
+      const expectedSize = getFileSize(fileInfo);
 
       const linkRes = await tb.getDownloadLink(tid, String(fileId));
       if (!linkRes.success || !linkRes.data) {
@@ -320,7 +338,7 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
         local_progress: Math.floor((idx / totalFiles) * 100),
         local_path: destFolder,
       });
-      if (mainWindow) mainWindow.webContents.send('downloads-updated');
+      eventBus.emit('downloads-updated');
 
       let lastUpdate = 0;
       const onProg = (p: DownloadProgress) => {
@@ -344,7 +362,7 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
             local_eta: eta,
             local_path: destFolder,
           });
-          if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          eventBus.emit('downloads-updated');
         }
       };
 
@@ -370,6 +388,9 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
       local_path: destFolder,
     });
     console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
+
+    // ── Subtítulos automáticos (spa + en) ──────────────
+    await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder);
     
   } catch (err: any) {
     updateDownload(tid, {
@@ -379,20 +400,97 @@ async function runTorboxDownload(tid: string, dlData: any, destRoot: string, tok
   } finally {
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
-    if (mainWindow) mainWindow.webContents.send('downloads-updated');
+    eventBus.emit('downloads-updated');
+  }
+}
+
+// ── Subtítulos automáticos ─────────────────────────────
+
+const VIDEO_EXT_RE = /\.(mkv|mp4|avi|m4v|mov|wmv)$/i;
+const EP_RE = /[sS](\d{1,2})[eE](\d{1,2})/;
+
+/**
+ * Tras completar una descarga, busca el/los video(s) en la carpeta destino
+ * y descarga subtítulos (español + inglés) vía electron/subtitles.py.
+ * Fire-and-forget: errores solo se loguean, nunca fallan la descarga.
+ */
+async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string) {
+  try {
+    const py = process.env.TDP_PYTHON || 'python3';
+    const script = path.join(__dirname, '..', 'electron', 'subtitles.py');
+    if (!fs.existsSync(script)) {
+      console.log('[Subs] subtitles.py no encontrado, saltando descarga de subtítulos');
+      return;
+    }
+    const videos = fs.readdirSync(destFolder)
+      .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
+      .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
+    if (videos.length === 0) return;
+
+    // Resolver imdb: usar el nombre del torrent (título base sin tags)
+    const epMatch = name.match(EP_RE);
+    const isSeries = type === 'series' || !!epMatch;
+    // Título: quitar año, tags de calidad, SxxExx y release group
+    let title = name
+      .replace(/\b(19|20)\d{2}\b/g, ' ')
+      .replace(EP_RE, ' ')
+      .replace(/[.\-_]+/g, ' ')
+      .replace(/\b(1080p|720p|4k|2160p|web[-\s]?dl|bluray|webrip|hdr|x264|x265|h\.?265|hevc|h\.?264|aac|ac3|ddp5[.\s]?1|atmos|5[.\s]?1|7[.\s]?1|dual|latino|english|spanish|extended|unrated|repack|proper|nf|amzn|atvp|itunes|hmax|dsnp|uhd|remux|s\d{1,2}|complete|season|series|episode)\b/gi, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    // Quitar release group residual: último token TODO en mayúsculas (p.ej. ETHEL, KONTRAST, HEEL)
+    const tokens = title.split(' ');
+    while (tokens.length > 3) {
+      const last = tokens[tokens.length - 1];
+      if (/^[A-Z0-9]{2,}$/.test(last) && last !== last.toLowerCase()) {
+        tokens.pop();
+      } else {
+        break;
+      }
+    }
+    title = tokens.join(' ').trim();
+    if (!title) title = name;
+
+    for (const v of videos) {
+      const videoPath = path.join(destFolder, v);
+      const args = ['electron/subtitles.py', 'fetch', '--title', title, '--type', isSeries ? 'series' : 'movie', '--dest', videoPath];
+      if (isSeries && epMatch) {
+        args.push('--season', epMatch[1], '--episode', epMatch[2]);
+      }
+      await new Promise<void>((resolve) => {
+        const proc = spawn(py, [script, ...args.slice(1)], { env: process.env as any });
+        let out = '';
+        proc.stdout?.on('data', (c: Buffer) => (out += c.toString()));
+        proc.stderr?.on('data', (c: Buffer) => (out += c.toString()));
+        proc.on('close', () => {
+          console.log(`[Subs] ${v}: ${out.trim().split('\n').pop()}`);
+          resolve();
+        });
+        proc.on('error', (e) => { console.log(`[Subs] error: ${e.message}`); resolve(); });
+        setTimeout(() => { try { proc.kill('SIGTERM') } catch {} resolve() }, 60_000);
+      });
+    }
+  } catch (e: any) {
+    console.log(`[Subs] skip: ${e.message}`);
   }
 }
 
 // ── Real-Debrid local download ─────────────────────────
 
-async function runRealdebridDownload(tid: string, dlData: any, destRoot: string, token: string, mainWindow: BrowserWindow | null) {
+async function runRealdebridDownload(tid: string, dlData: any, settings: any, token: string, mainWindow: BrowserWindow | null) {
   try {
-    if (!destRoot || !destRoot.trim()) {
-      throw new Error('Destination folder is not configured');
+    const rec = getDownloadByTorboxId(tid);
+    const type: 'movie' | 'series' | '' = rec?.type || '';
+    let destFolder: string;
+    if (rec?.dest_folder) {
+      destFolder = rec.dest_folder;
+    } else {
+      const { root, folder } = await computeDestination(settings, dlData.filename || dlData.name || tid, type);
+      if (!root) throw new Error('Destination folder is not configured');
+      destFolder = path.join(root, ...folder.split('/').map(safeSegment));
     }
 
     const rd = new RealDebridAPI(token);
-    const destFolder = destRoot;
     safeMkdirSync(destFolder);
 
     // Get torrent info to obtain the links array
@@ -451,7 +549,7 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
         local_progress: Math.floor((idx / totalLinks) * 100),
         local_path: destFolder,
       });
-      if (mainWindow) mainWindow.webContents.send('downloads-updated');
+      eventBus.emit('downloads-updated');
 
       let lastUpdate = 0;
       const onProg = (p: DownloadProgress) => {
@@ -475,7 +573,7 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
             local_eta: eta,
             local_path: destFolder,
           });
-          if (mainWindow) mainWindow.webContents.send('downloads-updated');
+          eventBus.emit('downloads-updated');
         }
       };
 
@@ -500,6 +598,9 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
     });
     console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
 
+    // ── Subtítulos automáticos (spa + en) ──────────────
+    await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder);
+
   } catch (err: any) {
     updateDownload(tid, {
       local_status: `failed: ${err.message}`,
@@ -508,6 +609,6 @@ async function runRealdebridDownload(tid: string, dlData: any, destRoot: string,
   } finally {
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
-    if (mainWindow) mainWindow.webContents.send('downloads-updated');
+    eventBus.emit('downloads-updated');
   }
 }

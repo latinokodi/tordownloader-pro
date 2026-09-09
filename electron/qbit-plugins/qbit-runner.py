@@ -62,6 +62,16 @@ def normalize_result(raw: dict) -> Optional[dict]:
     if not link or not name:
         return None
 
+    # Skip error-page "results" some engines emit when nothing matches
+    name_lower = str(name).lower()
+    if any(x in name_lower for x in (
+        'no se encontraron resultados',
+        'no se han encontrado resultados',
+        'no results found',
+        'no results were found',
+    )):
+        return None
+
     info_hash = extract_info_hash(link)
 
     # Parse size — can be '1.5 GB', '1500000000 B', or '-1'
@@ -115,16 +125,18 @@ def load_plugin(engine_file: str, source_dir: str = ENGINES_DIR) -> Optional[tup
 
     try:
         # Dynamic import
-        import importlib
+        import importlib.util
         spec = importlib.util.spec_from_file_location(
             module_name,
             os.path.join(source_dir, engine_file)
         )
         if spec is None or spec.loader is None:
+            print(f"[debug] {engine_file}: spec is None", file=sys.stderr)
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-    except Exception:
+    except Exception as e:
+        print(f"[debug] {engine_file}: LOAD ERROR {type(e).__name__}: {e}", file=sys.stderr)
         return None
 
     # Find the plugin class (the one with .search method and .url attribute)
@@ -192,7 +204,7 @@ def main():
         sys.exit(0)
 
     engine_files = sorted(f for f in os.listdir(ENGINES_DIR) if f.endswith('.py'))
-    
+
     # Prepend user plugins (they override bundled ones of the same name)
     if USER_PLUGINS_DIR:
         user_files = sorted(f for f in os.listdir(USER_PLUGINS_DIR) if f.endswith('.py'))

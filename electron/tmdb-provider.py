@@ -112,6 +112,9 @@ def cmd_detail(tmdb_id, media_type):
         result['imdb_id'] = ext.get('imdb_id')
         result['runtime'] = data.get('runtime', 0)
         result['genres'] = [g['name'] for g in data.get('genres', [])]
+        result['original_title'] = data.get('original_title', '')
+        result['release_date'] = data.get('release_date', '')
+        result['status'] = data.get('status', '')
     else:
         data = tmdb_get(f'/tv/{tmdb_id}')
         ext = tmdb_get(f'/tv/{tmdb_id}/external_ids')
@@ -122,12 +125,23 @@ def cmd_detail(tmdb_id, media_type):
                 'season_number': s['season_number'],
                 'name': s['name'],
                 'episode_count': s['episode_count'],
+                'air_date': s.get('air_date', ''),
                 'poster': poster_url(s.get('poster_path')),
             }
             for s in data.get('seasons', [])
             if s.get('season_number', 0) > 0
         ]
         result['genres'] = [g['name'] for g in data.get('genres', [])]
+        result['original_title'] = data.get('original_name', '')
+        result['first_air_date'] = data.get('first_air_date', '')
+        result['status'] = data.get('status', '')
+        next_ep = data.get('next_episode_to_air') or {}
+        result['next_episode_to_air'] = {
+            'season_number': next_ep.get('season_number'),
+            'episode_number': next_ep.get('episode_number'),
+            'air_date': next_ep.get('air_date', ''),
+            'name': next_ep.get('name', ''),
+        } if next_ep else None
 
     return result
 
