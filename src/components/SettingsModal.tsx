@@ -18,6 +18,7 @@ interface SettingsSchema {
   monitor_interval_minutes?: number
   automation_service?: string
   automation_failover?: boolean
+  max_grab_size_gb?: number
 }
 
 interface Props {
@@ -532,6 +533,19 @@ export function SettingsModal({ onClose, showToast }: Props) {
                 <label htmlFor="automationFailover" className="text-sm font-mono text-text-main cursor-pointer select-none">
                   {t.settings.failoverLabel}
                 </label>
+              </div>
+              <div>
+                <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.maxSizeLabel}</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="input-field w-full"
+                  placeholder="0"
+                  value={settings?.max_grab_size_gb ?? 0}
+                  onChange={(e) => setSettings((s) => s ? { ...s, max_grab_size_gb: Math.max(0, Number(e.target.value) || 0) } : null)}
+                />
+                <p className="text-xs text-text-muted mt-1">{t.settings.maxSizeHint}</p>
               </div>
             </div>
 

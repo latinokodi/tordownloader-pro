@@ -192,6 +192,8 @@ const es: TranslationKeys = {
     intervalLabel: 'Intervalo de verificación (minutos)',
     serviceLabel: 'Servicio debrid para automatización',
     failoverLabel: 'Cambiar al otro servicio si falla una descarga',
+    maxSizeLabel: 'Tamaño máximo por descarga (GB)',
+    maxSizeHint: '0 = sin límite. Las releases mayores se omiten y se reintentan después.',
     savedAutomation: 'Configuración de automatización guardada',
   },
   toasts: {

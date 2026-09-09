@@ -69,6 +69,32 @@ function hashFromLink(link: string): string | null {
   return m ? m[1].toLowerCase() : null
 }
 
+/** Normalize a size field ("5.4 GB", "1234567", "2,1GB", "0 B") to bytes. */
+export function parseSizeBytes(size: unknown): number | null {
+  if (size === null || size === undefined) return null
+  if (typeof size === 'number') return Number.isFinite(size) && size >= 0 ? Math.round(size) : null
+  const s = String(size).trim().toLowerCase().replace(/\s+/g, '').replace(',', '.')
+  if (!s) return null
+  const m = s.match(/^(\d+(?:\.\d+)?)(b|bytes?|kb|mb|gb|tb)?$/)
+  if (!m) return null
+  const val = parseFloat(m[1])
+  if (!Number.isFinite(val)) return null
+  const unit = m[2]
+  if (!unit) {
+    const raw = Number(s)
+    return Number.isFinite(raw) ? Math.round(raw) : null
+  }
+  const mult: Record<string, number> = { b: 1, bytes: 1, byte: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 }
+  return Math.round(val * (mult[unit] ?? 1))
+}
+
+function exceedsMaxBytes(result: GrabResultItem, maxBytes: number | null): boolean {
+  if (!maxBytes) return false
+  const bytes = parseSizeBytes(result.size)
+  if (bytes === null || bytes <= 0) return false // unknown size — never block on it
+  return bytes > maxBytes
+}
+
 /** Collect every SxxExx pair mentioned in a release title. */
 function epMarkers(title: string): Array<{ s: number; e: number }> {
   const out: Array<{ s: number; e: number }> = []
@@ -329,6 +355,8 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     base.error = 'Destination folder not configured (set movies/series folders in Settings)'
     return base
   }
+  // Global cap: 0 = sin límite. Solo aplica a grabs automáticos (monitor/búsqueda).
+  const maxBytes = settings.max_grab_size_gb > 0 ? settings.max_grab_size_gb * 1024 ** 3 : null
 
   const phaseOrder: Array<'latino' | 'english'> =
     target.language_profile === 'latino_only' ? ['latino']
@@ -351,6 +379,17 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     if (phase === 'latino') base.latinoResults = results.length
     else base.englishResults = results.length
     if (results.length === 0) continue
+
+    // Tope de tamaño (configurable): descarta releases gigantes; si TODAS
+    // exceden el tope, la fase se omite y se reintenta con backoff.
+    if (maxBytes && results.some((r) => exceedsMaxBytes(r, maxBytes))) {
+      const kept = results.filter((r) => !exceedsMaxBytes(r, maxBytes))
+      if (kept.length === 0) {
+        console.log(`[grab] ${phase}: todas las releases superan el tope de ${settings.max_grab_size_gb} GB — omitidas ("${target.title}")`)
+        continue
+      }
+      results = kept
+    }
 
     const best = chooseBest(results, target)
     if (!best) continue
