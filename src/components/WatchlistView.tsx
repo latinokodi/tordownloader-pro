@@ -238,23 +238,28 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
             </select>
           </div>
           {hits.length > 0 && (
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 max-h-80 overflow-auto pr-1">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 max-h-[26rem] overflow-auto pr-1 pb-1">
               {hits.map((hit) => (
-                <div key={`${hit.media_type}-${hit.id}`} className="border border-border rounded p-2 flex gap-2 items-center hover:border-accent/60">
-                  {hit.poster ? (
-                    <img src={hit.poster} alt="" className="w-10 h-14 object-cover rounded" loading="lazy" />
-                  ) : (
-                    <div className="w-10 h-14 bg-bg-deep rounded flex items-center justify-center text-text-muted"><BookMarked size={16} /></div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold truncate">{hit.title}</div>
-                    <div className="text-[10px] text-text-muted font-mono">
-                      {hit.media_type === 'movie' ? t.watchlist.movie : t.watchlist.series}{hit.year ? ` · ${hit.year}` : ''}
-                    </div>
+                <div key={`${hit.media_type}-${hit.id}`} className="group flex flex-col overflow-hidden rounded-xl border border-border bg-bg-card hover:border-accent/60 transition-colors">
+                  <div className="relative aspect-[2/3] bg-bg-input overflow-hidden">
+                    {hit.poster ? (
+                      <img src={hit.poster} alt={hit.title} className="w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-text-muted"><BookMarked size={30} strokeWidth={1.4} /></div>
+                    )}
+                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-bg-deep/85 text-text-main backdrop-blur-sm">
+                      {hit.media_type === 'movie' ? t.watchlist.movie : t.watchlist.series}
+                    </span>
                   </div>
-                  <button className="btn border border-accent/50 text-accent px-2 py-1 text-[10px]" onClick={() => addItem(hit)} disabled={busy}>
-                    <Plus size={12} className="inline mr-0.5" />{t.watchlist.addItem}
-                  </button>
+                  <div className="p-2.5 flex flex-col gap-1.5 flex-1">
+                    <div className="text-[13px] font-semibold text-text-heading leading-snug line-clamp-2 min-h-[2.6em]" title={hit.title}>
+                      {hit.title}
+                    </div>
+                    <div className="text-[11px] text-text-muted">{hit.year || '—'}</div>
+                    <button className="btn btn-accent w-full text-xs px-2 py-1.5 mt-auto" onClick={() => addItem(hit)} disabled={busy}>
+                      <Plus size={13} />{t.watchlist.addItem}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
