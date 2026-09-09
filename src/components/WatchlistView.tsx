@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookMarked, Plus, Play, Pause, RefreshCw, Trash2, MonitorCheck, Search, X } from 'lucide-react'
 import { useT } from '../i18n'
 import { http } from '../hooks/http'
@@ -50,6 +50,16 @@ interface MonitorInfo {
 
 const PROFILE_ORDER = ['latino_first', 'latino_only', 'english_first'] as const
 const SCOPE_ORDER = ['new', 'last_episode', 'last_season', 'first_season', 'all'] as const
+
+interface UpgradeOffer {
+  season: number | null
+  episode: number | null
+  kind: 'movie' | 'episode'
+  release: string
+  size: string
+  indexer: string
+  current: string
+}
 
 export function WatchlistView({ showToast, onActivity }: { showToast: (msg: string, type?: 'success' | 'error') => void; onActivity: () => void }) {
   const t = useT()
@@ -207,12 +217,71 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
     } catch (e: any) {
       showToast(e?.message || t.toasts.error, 'error')
     }
+    // Re-búsqueda manual de versiones latinas para descargas EN ya hechas:
+    // si aparece algo, el programa PREGUNTA (modal) antes de reemplazar.
+    window.setTimeout(() => { startUpgradePoll(id).catch(() => {}) }, 800)
     window.setTimeout(() => {
       setCheckingId(null)
       refresh().catch(() => {})
       onActivity()
     }, 4000)
   }, [onActivity, refresh, showToast, t])
+
+  // ── Escáner de reemplazo manual EN → latino ──────────────
+  const [upgradeState, setUpgradeState] = useState<{ itemId: number; offers: UpgradeOffer[]; scanning: boolean } | null>(null)
+  const ignoredUpgrades = useRef<Set<string>>(new Set())
+  const pollTimer = useRef<number | null>(null)
+
+  const clearUpgradePoll = () => {
+    if (pollTimer.current) { window.clearTimeout(pollTimer.current); pollTimer.current = null }
+  }
+
+  const startUpgradePoll = useCallback(async (id: number) => {
+    clearUpgradePoll()
+    try {
+      await http<any>(`/api/watchlist/${id}/upgrades/scan`, 'POST')
+    } catch { return }
+    const tryFetch = async (tries: number) => {
+      try {
+        const res = await http<any>(`/api/watchlist/${id}/upgrades`, 'GET')
+        const data = res?.data
+        if (!data) return
+        if (data.offers?.length > 0) {
+          const visible = (data.offers as UpgradeOffer[]).filter((o) => !ignoredUpgrades.current.has(`${id}-${o.season}-${o.episode}`))
+          if (visible.length > 0) {
+            setUpgradeState({ itemId: id, offers: visible, scanning: false })
+            return
+          }
+        }
+        if (data.state === 'done') {
+          // Ya está en latino o no hay nada que reemplazar — no molestar.
+          return
+        }
+        if (tries > 0) {
+          pollTimer.current = window.setTimeout(() => tryFetch(tries - 1), 3500)
+        }
+      } catch { /* server restart mid-poll etc. */ }
+    }
+    pollTimer.current = window.setTimeout(() => tryFetch(12), 1000)
+  }, [http])
+
+  const applyUpgrade = useCallback(async (itemId: number, season: number | null, episode: number | null) => {
+    try {
+      const res = await http<any>(`/api/watchlist/${itemId}/upgrade`, 'POST', { season, episode })
+      if (res?.success) {
+        showToast(t.watchlist.upgradeQueued)
+        setUpgradeState(null)
+        window.setTimeout(() => refresh().catch(() => {}), 3000)
+      } else {
+        showToast(res?.error || t.toasts.error, 'error')
+        if (res?.error) setUpgradeState((s) => (s ? { ...s, offers: [] } : s))
+      }
+    } catch (e: any) {
+      showToast(e?.message || t.toasts.error, 'error')
+    }
+  }, [http, refresh, showToast, t])
+
+  useEffect(() => clearUpgradePoll, [])
 
   const lastGrabText = useCallback((g: NonNullable<WatchItem['lastGrab']>): string => {
     const lang = g.language === 'latino' ? t.watchlist.langLatino : t.watchlist.langEnglish
@@ -490,6 +559,70 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
           ))}
         </div>
       </div>
+
+      {/* Modal de reemplazo manual EN → latino */}
+      {upgradeState && upgradeState.offers.length > 0 && (
+        <div
+          className="modal-overlay"
+          onClick={() => { setUpgradeState(null) }}
+        >
+          <div
+            className="glass-panel w-full max-w-lg rounded-2xl p-6 max-h-[85vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 mb-1">
+              <div>
+                <h3 className="text-lg font-extrabold text-text-heading tracking-tight">{t.watchlist.upgradeTitle}</h3>
+                <p className="text-sm text-text-muted mt-0.5">{t.watchlist.upgradeDesc}</p>
+              </div>
+              <button
+                className="text-text-muted hover:text-danger transition-colors shrink-0"
+                onClick={() => setUpgradeState(null)}
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              {upgradeState.offers.map((o, i) => (
+                <div key={`${o.season}-${o.episode}-${i}`} className="rounded-xl border border-border bg-bg-card p-3.5 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-text-heading truncate">
+                        {o.kind === 'movie' ? items.find((i) => i.id === upgradeState.itemId)?.title || t.watchlist.movie : `S${String(o.season).padStart(2, '0')}E${String(o.episode).padStart(2, '0')}`}
+                      </div>
+                      <div className="text-[11px] text-text-muted truncate" title={o.current}>
+                        {o.release}
+                      </div>
+                      <div className="text-[11px] text-text-muted mt-0.5">
+                        {o.size} · {o.indexer}
+                      </div>
+                    </div>
+                    <div className="shrink-0 flex flex-col gap-1.5">
+                      <button
+                        className="btn btn-accent text-xs px-3 py-1.5"
+                        onClick={() => applyUpgrade(upgradeState.itemId, o.season, o.episode)}
+                      >
+                        {t.watchlist.upgradeReplace}
+                      </button>
+                      <button
+                        className="btn border border-border text-xs px-3 py-1.5 hover:border-accent"
+                        onClick={() => {
+                          ignoredUpgrades.current.add(`${upgradeState.itemId}-${o.season}-${o.episode}`)
+                          const rest = upgradeState.offers.filter((x) => x !== o)
+                          setUpgradeState(rest.length > 0 ? { ...upgradeState, offers: rest } : null)
+                        }}
+                      >
+                        {t.watchlist.upgradeIgnore}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 text-[11px] text-text-muted">{t.watchlist.upgradeNote}</div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

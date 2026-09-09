@@ -100,6 +100,8 @@ export function initDB(): void {
       torbox_id VARCHAR DEFAULT '',
       info_hash VARCHAR DEFAULT '',
       error VARCHAR DEFAULT '',
+      dest_folder VARCHAR DEFAULT '',
+      file_name VARCHAR DEFAULT '',
       grabbed_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_grab_uniq ON grab_history(tmdb_id, media_type, season, episode);
@@ -147,6 +149,8 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN max_grab_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE settings ADD COLUMN max_movie_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE settings ADD COLUMN max_series_size_gb INTEGER DEFAULT 0`,
+    `ALTER TABLE grab_history ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
+    `ALTER TABLE grab_history ADD COLUMN file_name VARCHAR DEFAULT ''`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
@@ -239,6 +243,8 @@ export interface GrabHistoryRow {
   torbox_id: string;
   info_hash: string;
   error: string;
+  dest_folder: string;
+  file_name: string;
   grabbed_at: string;
 }
 

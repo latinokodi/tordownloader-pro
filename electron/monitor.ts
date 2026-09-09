@@ -10,9 +10,9 @@
 //    per-episode searches every cycle.
 //  - A target stops being wanted once grabbed or the item is removed.
 import { getSettings, updateSettings, type WatchlistItem, type BackfillScope } from './db'
-import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem } from './watchlist'
+import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem, englishGrabbedRows, markReplacePending, latestGrabFor } from './watchlist'
 import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, nextDelayMinutes, type MonitorAttempt } from './attempts'
-import { grab, type GrabTarget, type GrabOutcome } from './grabber'
+import { grab, findLatinoForUpgrade, type GrabTarget, type GrabOutcome } from './grabber'
 import { tmdbDetail, tmdbSeason } from './tmdb'
 import { setupSearchEnv } from './python-run'
 import { eventBus } from './event-bus'
@@ -448,3 +448,137 @@ export function getMonitorLastSummary(): MonitorStatus['lastSummary'] {
 setInterval(() => {
   if (detailCache.size > 200) detailCache.clear()
 }, 60 * 60 * 1000).unref?.()
+
+// ── Escáner manual de reemplazo EN → latino ──────────────
+// El usuario prefiere decidir: Verificar busca de nuevo y, si hay versión
+// latina de algo ya descargado EN, el programa le PREGUNTA antes de
+// reemplazar. El monitor NUNCA hace upgrades solo.
+
+export interface UpgradeOffer {
+  season: number | null
+  episode: number | null
+  kind: 'movie' | 'episode'
+  release: string
+  size: string
+  indexer: string
+  current: string // título EN actual (history)
+}
+
+interface ScanState {
+  state: 'idle' | 'scanning' | 'done'
+  hadEnglish: boolean
+  offers: UpgradeOffer[]
+  startedAt: string
+  finishedAt?: string
+}
+
+const upgradeScans = new Map<number, ScanState>()
+
+export function getUpgradeScan(itemId: number): ScanState {
+  return upgradeScans.get(itemId) || { state: 'idle', hadEnglish: false, offers: [], startedAt: '' }
+}
+
+export function startUpgradeScan(itemId: number): boolean {
+  const current = getUpgradeScan(itemId)
+  if (current.state === 'scanning') return true
+  const item = getWatchlistItem(itemId)
+  if (!item) return false
+  upgradeScans.set(itemId, { state: 'scanning', hadEnglish: false, offers: [], startedAt: new Date().toISOString() })
+  runUpgradeScan(item).catch((e) => console.error('[upgrade] scan error:', e.message))
+  return true
+}
+
+async function runUpgradeScan(item: WatchlistItem): Promise<void> {
+  const rows = englishGrabbedRows(item.id, 4)
+  const state = upgradeScans.get(item.id)!
+  state.hadEnglish = rows.length > 0
+  if (rows.length === 0) {
+    state.state = 'done'
+    state.finishedAt = new Date().toISOString()
+    return
+  }
+  const detail = await fetchDetailCached(item)
+  for (const row of rows) {
+    const target: GrabTarget = {
+      watchlist_id: item.id,
+      tmdb_id: item.tmdb_id,
+      media_type: item.media_type,
+      imdb_id: item.imdb_id || detail?.imdb_id || undefined,
+      title: detail?.original_title || item.title,
+      year: detail?.year || item.year || undefined,
+      kind: row.kind === 'movie' ? 'movie' : 'episode',
+      season: row.season ?? undefined,
+      episode: row.episode ?? undefined,
+      language_profile: 'latino_only',
+      mode: 'upgrade',
+    }
+    const best = await findLatinoForUpgrade(target)
+    const st = upgradeScans.get(item.id)!
+    if (best) {
+      st.offers.push({
+        season: row.season,
+        episode: row.episode,
+        kind: row.kind === 'movie' ? 'movie' : 'episode',
+        release: best.title,
+        size: best.size,
+        indexer: best.indexer,
+        current: row.title || 'descarga EN',
+      })
+    }
+  }
+  const st = upgradeScans.get(item.id)!
+  st.state = 'done'
+  st.finishedAt = new Date().toISOString()
+  console.log(`[upgrade] "${item.title}": ${st.hadEnglish ? `escaneo terminado — ${st.offers.length} versión(es) latina(s) disponible(s)` : 'sin descargas EN que reemplazar'}`)
+}
+
+export interface UpgradeResult {
+  ok: boolean
+  error?: string
+  grabbed?: boolean
+}
+
+export async function applyUpgrade(itemId: number, season: number | null, episode: number | null): Promise<UpgradeResult> {
+  const item = getWatchlistItem(itemId)
+  if (!item) return { ok: false, error: 'Watchlist item not found' }
+  const isMovie = season === null || season === undefined
+  const detail = await fetchDetailCached(item)
+  const target: GrabTarget = {
+    watchlist_id: item.id,
+    tmdb_id: item.tmdb_id,
+    media_type: item.media_type,
+    imdb_id: item.imdb_id || detail?.imdb_id || undefined,
+    title: detail?.original_title || item.title,
+    year: detail?.year || item.year || undefined,
+    kind: isMovie ? 'movie' : 'episode',
+    season: isMovie ? undefined : (season as number),
+    episode: isMovie ? undefined : (episode as number),
+    language_profile: 'latino_only',
+    mode: 'upgrade',
+  }
+  const outcome = await grab(target)
+  if (outcome.status !== 'grabbed') {
+    const why = outcome.status === 'no_source'
+      ? 'No hay versión latina todavía — reintenta más tarde'
+      : outcome.error || 'Fallo desconocido'
+    return { ok: false, error: why }
+  }
+  // Marca la(s) fila(s) EN antigua(s) como reemplazo pendiente; el worker
+  // borra el archivo EN cuando el latino termine de descargarse local.
+  const fresh = latestGrabFor(item.tmdb_id, item.media_type, isMovie ? null : (season as number), isMovie ? null : (episode as number))
+  if (fresh && fresh.id) {
+    try {
+      markReplacePending(item.tmdb_id, item.media_type, isMovie ? null : (season as number), isMovie ? null : (episode as number), fresh.id)
+    } catch (e: any) {
+      console.error('[upgrade] markReplacePending failed:', e.message)
+    }
+  }
+  // Quita de las ofertas lo ya resuelto.
+  const st = upgradeScans.get(item.id)
+  if (st) {
+    st.offers = st.offers.filter((o) => o.season !== (isMovie ? null : season) || o.episode !== (isMovie ? null : episode))
+    if (st.offers.length === 0) st.state = 'done'
+  }
+  console.log(`[upgrade] ✓ "${item.title}"${isMovie ? '' : ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`} → latino (${outcome.source}) — EN será reemplazado al completar`)
+  return { ok: true, grabbed: true }
+}

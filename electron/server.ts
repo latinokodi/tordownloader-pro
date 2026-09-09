@@ -16,7 +16,7 @@ import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateD
 import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
 import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
-import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus } from './monitor'
+import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade } from './monitor'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -408,6 +408,32 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
         const id = Math.trunc(Number(api.split('/')[1]))
         if (!Number.isFinite(id) || !getWatchlistItem(id)) return sendJson(res, 404, { success: false, error: 'Watchlist item not found' })
         return sendJson(res, 200, { success: true, data: grabHistoryForItem(id, 100) })
+      }
+      // ── Reemplazo manual EN → latino (el usuario decide) ──
+      if (api.startsWith('watchlist/') && api.endsWith('/upgrades/scan') && method === 'POST') {
+        const id = Math.trunc(Number(api.split('/')[1]))
+        if (!Number.isFinite(id) || !getWatchlistItem(id)) return sendJson(res, 404, { success: false, error: 'Watchlist item not found' })
+        const started = startUpgradeScan(id)
+        return sendJson(res, 200, { success: true, started })
+      }
+      if (api.startsWith('watchlist/') && api.endsWith('/upgrades') && method === 'GET') {
+        const id = Math.trunc(Number(api.split('/')[1]))
+        if (!Number.isFinite(id) || !getWatchlistItem(id)) return sendJson(res, 404, { success: false, error: 'Watchlist item not found' })
+        return sendJson(res, 200, { success: true, data: getUpgradeScan(id) })
+      }
+      if (api.startsWith('watchlist/') && api.endsWith('/upgrade') && method === 'POST') {
+        const id = Math.trunc(Number(api.split('/')[1]))
+        if (!Number.isFinite(id) || !getWatchlistItem(id)) return sendJson(res, 404, { success: false, error: 'Watchlist item not found' })
+        const body = await readBody(req)
+        const season = body.season === undefined || body.season === null ? null : Math.trunc(Number(body.season))
+        const episode = body.episode === undefined || body.episode === null ? null : Math.trunc(Number(body.episode))
+        if (season !== null && (!Number.isFinite(season) || !Number.isFinite(episode))) {
+          return sendJson(res, 400, { success: false, error: 'Invalid season/episode' })
+        }
+        const result = await applyUpgrade(id, season, episode)
+        if (!result.ok) return sendJson(res, 202, { success: false, error: result.error })
+        eventBus.emit('watchlist-updated', { action: 'upgrade', id })
+        return sendJson(res, 200, { success: true, data: result })
       }
       if (api.startsWith('watchlist/') && method === 'DELETE') {
         const id = Math.trunc(Number(api.split('/')[1]))

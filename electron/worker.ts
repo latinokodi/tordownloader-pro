@@ -1,6 +1,7 @@
 import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
+import { appendDownloadedFile, finalizeReplacement } from './watchlist';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
@@ -401,6 +402,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
         throw new Error(`Failed to download ${fileName}: ${result.error}`);
       }
       console.log(`[Worker] TB ✓ ${fileName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
+      appendDownloadedFile(tid, filePath)
 
       if (expectedSize > 0) {
         const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
@@ -422,6 +424,8 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
 
     // ── Subtítulos automáticos (spa + en) ──────────────
     await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder);
+    // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
+    try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
     
   } catch (err: any) {
     updateDownload(tid, {
@@ -614,6 +618,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
         throw new Error(`Failed to download part ${idx + 1}: ${result.error}`);
       }
       console.log(`[Worker] RD ✓ ${safeName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
+      appendDownloadedFile(tid, filePath)
 
       completedBytes += expectedSize || result.bytes_downloaded;
     }
@@ -633,6 +638,8 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
 
     // ── Subtítulos automáticos (spa + en) ──────────────
     await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder);
+    // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
+    try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
 
   } catch (err: any) {
     updateDownload(tid, {

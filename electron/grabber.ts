@@ -27,6 +27,8 @@ export interface GrabTarget {
   season?: number
   episode?: number
   language_profile: LanguageProfile
+  /** 'upgrade' = solo fase latino, para reemplazo manual EN → latino. */
+  mode?: 'upgrade'
 }
 
 export interface GrabResultItem {
@@ -255,6 +257,37 @@ async function searchEnglish(target: GrabTarget): Promise<GrabResultItem[]> {
   return dedupeResults(out)
 }
 
+/**
+ * Búsqueda SOLO latino para el escáner de reemplazo manual EN → latino.
+ * Respeta el tope de tamaño por tipo; devuelve el mejor candidato o null.
+ */
+export async function findLatinoForUpgrade(target: GrabTarget): Promise<GrabResultItem | null> {
+  const settings = getSettings()
+  const apiKey = settings.tmdb_api_key || ''
+  setupSearchEnv(settings)
+  let imdbId = target.imdb_id || ''
+  if (!imdbId && apiKey) {
+    try {
+      const detail = await tmdbDetail(target.tmdb_id, target.media_type)
+      imdbId = detail?.imdb_id || ''
+    } catch { /* no key or network */ }
+  }
+  if (!imdbId) return null
+  const capGb = target.kind === 'movie' ? settings.max_movie_size_gb : settings.max_series_size_gb
+  const maxBytes = capGb > 0 ? capGb * 1024 ** 3 : null
+  let results: GrabResultItem[] = []
+  try {
+    results = await searchLatino({ ...target, imdb_id: imdbId }, apiKey)
+  } catch (e: any) {
+    console.warn(`[grab] upgrade scan error "${target.title}": ${e.message}`)
+    return null
+  }
+  if (maxBytes && results.some((r) => exceedsMaxBytes(r, maxBytes))) {
+    results = results.filter((r) => !exceedsMaxBytes(r, maxBytes))
+  }
+  return chooseBest(results, target)
+}
+
 function serviceOrder(settings: Settings): DebridService[] {
   const prefs: DebridService[] = []
   const preferred: DebridService = settings.automation_service === 'realdebrid' ? 'realdebrid' : 'torbox'
@@ -374,9 +407,10 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
   const maxBytes = capGb > 0 ? capGb * 1024 ** 3 : null
 
   const phaseOrder: Array<'latino' | 'english'> =
-    target.language_profile === 'latino_only' ? ['latino']
-      : target.language_profile === 'english_first' ? ['english', 'latino']
-        : ['latino', 'english']
+    target.mode === 'upgrade' ? ['latino']
+      : target.language_profile === 'latino_only' ? ['latino']
+        : target.language_profile === 'english_first' ? ['english', 'latino']
+          : ['latino', 'english']
 
   for (const phase of phaseOrder) {
     if (phase === 'latino' && !imdbId) continue
@@ -434,6 +468,7 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
             status: 'grabbed',
             torbox_id: added.torboxId,
             info_hash: best.info_hash || hashFromLink(best.link) || '',
+            dest_folder: destFolder,
           })
         } catch (e: any) {
           console.error('[grab] history write failed:', e.message)

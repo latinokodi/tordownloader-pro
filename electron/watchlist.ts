@@ -160,11 +160,12 @@ export function recordGrab(row: {
   torbox_id?: string
   info_hash?: string
   error?: string
+  dest_folder?: string
 }): void {
   const db = getDB()
   db.prepare(
-    `INSERT INTO grab_history (watchlist_id, tmdb_id, media_type, season, episode, kind, title, language, source, status, torbox_id, info_hash, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO grab_history (watchlist_id, tmdb_id, media_type, season, episode, kind, title, language, source, status, torbox_id, info_hash, error, dest_folder)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.watchlist_id,
     row.tmdb_id,
@@ -179,7 +180,113 @@ export function recordGrab(row: {
     row.torbox_id || '',
     row.info_hash || '',
     String(row.error || '').slice(0, 1000),
+    String(row.dest_folder || '').slice(0, 1000),
   )
+}
+
+/** Grab history rows that are in English and could be upgraded to latino. */
+export function englishGrabbedRows(watchlistId: number, limit = 4): GrabHistoryRow[] {
+  const db = getDB()
+  return db.prepare(
+    `SELECT * FROM grab_history
+     WHERE watchlist_id = ? AND language = 'english' AND status = 'grabbed'
+     ORDER BY grabbed_at DESC LIMIT ?`,
+  ).all(watchlistId, limit) as GrabHistoryRow[]
+}
+
+/** The most recent row for a concrete target (grabbed or pending). */
+export function latestGrabFor(tmdbId: number, mediaType: string, season: number | null, episode: number | null): GrabHistoryRow | undefined {
+  const db = getDB()
+  return db.prepare(
+    `SELECT * FROM grab_history
+     WHERE tmdb_id = ? AND media_type = ? AND season IS ? AND episode IS ? AND status IN ('grabbed','replace_pending')
+     ORDER BY id DESC LIMIT 1`,
+  ).get(tmdbId, mediaType, season ?? null, episode ?? null) as GrabHistoryRow | undefined
+}
+
+/** Mark old EN rows as waiting to be replaced by the new latino grab. */
+export function markReplacePending(tmdbId: number, mediaType: string, season: number | null, episode: number | null, keepId: number): number {
+  const db = getDB()
+  const res = db.prepare(
+    `UPDATE grab_history SET status = 'replace_pending'
+     WHERE tmdb_id = ? AND media_type = ? AND season IS ? AND episode IS ? AND language = 'english' AND status = 'grabbed' AND id != ?`,
+  ).run(tmdbId, mediaType, season ?? null, episode ?? null, keepId)
+  return res.changes
+}
+
+/** Worker hook: record the locally-downloaded video file for a grab row. */
+export function appendDownloadedFile(torboxId: string, filePath: string): void {
+  if (!torboxId || !filePath) return
+  const db = getDB()
+  const row = db.prepare('SELECT id, dest_folder, file_name FROM grab_history WHERE torbox_id = ? ORDER BY id DESC LIMIT 1').get(torboxId) as any
+  if (!row) return
+  const dir = filePath.replace(/[/\\][^/\\]+$/, '')
+  const base = filePath.replace(/^.*[/\\]/, '')
+  const names = (row.file_name || '').split(',').filter(Boolean)
+  if (!names.includes(base)) names.push(base)
+  db.prepare('UPDATE grab_history SET dest_folder = ?, file_name = ? WHERE id = ?').run(dir, names.join(','), row.id)
+}
+
+function removeWithSidecars(filePath: string): boolean {
+  try {
+    const fs = require('fs') as typeof import('fs')
+    const pathMod = require('path') as typeof import('path')
+    if (!fs.existsSync(filePath)) return false
+    const base = filePath.replace(/\.[^./\\]+$/, '')
+    fs.rmSync(filePath, { force: true })
+    const dir = pathMod.dirname(filePath)
+    const stem = pathMod.basename(base)
+    let entries: string[] = []
+    try { entries = fs.readdirSync(dir) } catch { /* ignore */ }
+    for (const entry of entries) {
+      if (/\.(srt|vtt|ass|ssa|sub)$/i.test(entry) && entry.startsWith(stem + '.')) {
+        try { fs.rmSync(pathMod.join(dir, entry), { force: true }) } catch { /* ignore */ }
+      }
+    }
+    return true
+  } catch { return false }
+}
+
+/** Delete old EN artifacts once the replacing latino download is complete locally. */
+export function finalizeReplacement(torboxId: string): void {
+  const fs = require('fs') as typeof import('fs')
+  const pathMod = require('path') as typeof import('path')
+  const db = getDB()
+  const fresh = db.prepare(`SELECT * FROM grab_history WHERE torbox_id = ? ORDER BY id DESC LIMIT 1`).get(torboxId) as GrabHistoryRow | undefined
+  if (!fresh || fresh.language !== 'latino' || fresh.status !== 'grabbed') return
+  const siblings = db.prepare(
+    `SELECT * FROM grab_history
+     WHERE tmdb_id = ? AND media_type = ? AND season IS ? AND episode IS ? AND language = 'english' AND status = 'replace_pending'`,
+  ).all(fresh.tmdb_id, fresh.media_type, fresh.season ?? null, fresh.episode ?? null) as GrabHistoryRow[]
+  if (siblings.length === 0) return
+  const newNames = new Set((fresh.file_name || '').split(',').filter(Boolean))
+  const seasonFolder = fresh.dest_folder || ''
+  const epMarker = fresh.kind === 'episode' && fresh.season && fresh.episode
+    ? new RegExp(`\\b[Ss]${String(fresh.season).padStart(2, '0')}[Ee]${String(fresh.episode).padStart(2, '0')}\\b|\\b${fresh.season}[xX]${String(fresh.episode).padStart(2, '0')}\\b`)
+    : null
+  for (const old of siblings) {
+    const explicit = (old.file_name || '').split(',').filter(Boolean)
+    const targets: string[] = []
+    if (explicit.length > 0 && old.dest_folder) {
+      for (const f of explicit) targets.push(pathMod.join(old.dest_folder, f))
+    } else if (seasonFolder && epMarker) {
+      // Fallback para filas antiguas sin tracking: borrar vídeos del episodio
+      // en la carpeta del grab nuevo, excluyendo los archivos nuevos.
+      try {
+        for (const entry of fs.readdirSync(seasonFolder)) {
+          if (newNames.has(entry)) continue
+          const full = pathMod.join(seasonFolder, entry)
+          if (!fs.statSync(full).isFile()) continue
+          if (epMarker.test(entry) && /\.(mkv|mp4|avi|m4v|mov|ts)$/i.test(entry)) targets.push(full)
+        }
+      } catch { /* ignore */ }
+    }
+    let removed = 0
+    for (const t of targets) if (removeWithSidecars(t)) removed += 1
+    if (removed > 0) console.log(`[Worker] Reemplazo: ${removed} archivo(s) EN eliminado(s) (${fresh.season ? `S${String(fresh.season).padStart(2, '0')}E${String(fresh.episode).padStart(2, '0')}` : 'película'})`)
+    else console.warn(`[Worker] Reemplazo: no se pudo localizar el archivo EN (${old.title || 'sin nombre'}) — revisar carpeta a mano`)
+    db.prepare('DELETE FROM grab_history WHERE id = ?').run(old.id)
+  }
 }
 
 export function isGrabbed(tmdbId: number, mediaType: string, season: number | null, episode: number | null): boolean {
