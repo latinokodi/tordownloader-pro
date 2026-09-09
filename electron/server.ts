@@ -368,7 +368,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
             return sendJson(res, 400, { success: false, error: 'tmdb_id (positive int), media_type (movie|series) and title are required' })
           }
           const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
-          const item = addWatchlistItem({
+          const result = addWatchlistItem({
             tmdb_id: tmdbId,
             media_type: mediaType,
             title,
@@ -379,8 +379,19 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
             imdb_id: str(body.imdb_id, 20),
             language_profile: normalizeLanguageProfile(body.language_profile),
           })
-          eventBus.emit('watchlist-updated', { action: 'add', item })
-          return sendJson(res, item.created ? 201 : 200, { success: true, data: item, created: item.created })
+          eventBus.emit('watchlist-updated', { action: 'add', item: result.item })
+          if (result.created) {
+            // Un título ya estrenado debe intentarse YA, no en el próximo tick
+            // (hasta 30 min). El kick es en background y nunca bloquea la respuesta.
+            setTimeout(() => {
+              try {
+                if (!forceCheckItem(result.item.id)) console.error('[watchlist] immediate check could not start for item', result.item.id)
+              } catch (e: any) {
+                console.error('[watchlist] immediate check failed:', e.message)
+              }
+            }, 1500)
+          }
+          return sendJson(res, result.created ? 201 : 200, { success: true, data: result.item, created: result.created })
         } catch (e: any) {
           return sendJson(res, 400, { success: false, error: e.message })
         }
