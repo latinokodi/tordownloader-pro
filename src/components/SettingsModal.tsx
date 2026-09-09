@@ -469,6 +469,72 @@ export function SettingsModal({ onClose, showToast }: Props) {
               </label>
             </div>
 
+            {/* Automation (MediaPilot monitor engine) */}
+            <div className="mt-6 pt-4 border-t border-border space-y-4">
+              <span className="section-label">{t.settings.automationTitle}</span>
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="monitorEnabled"
+                  className="w-4 h-4 accent-accent bg-bg-deep border-border"
+                  checked={settings?.monitor_enabled ?? true}
+                  onChange={(e) => setSettings((s) => s ? { ...s, monitor_enabled: e.target.checked } : null)}
+                />
+                <label htmlFor="monitorEnabled" className="text-sm font-mono text-text-main cursor-pointer select-none">
+                  {t.settings.monitorEnabled}
+                </label>
+              </div>
+              <div>
+                <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.defaultLanguage}</label>
+                <select
+                  className="select-field"
+                  value={settings?.language_profile || 'latino_first'}
+                  onChange={(e) => setSettings((s) => s ? { ...s, language_profile: e.target.value } : null)}
+                >
+                  <option value="latino_first">{t.watchlist.latinoFirst}</option>
+                  <option value="latino_only">{t.watchlist.latinoOnly}</option>
+                  <option value="english_first">{t.watchlist.englishFirst}</option>
+                </select>
+              </div>
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.intervalLabel}</label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={1440}
+                    step={5}
+                    className="input-field w-full"
+                    value={settings?.monitor_interval_minutes ?? 30}
+                    onChange={(e) => setSettings((s) => s ? { ...s, monitor_interval_minutes: Math.max(5, Number(e.target.value) || 30) } : null)}
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.serviceLabel}</label>
+                  <select
+                    className="select-field"
+                    value={settings?.automation_service || 'torbox'}
+                    onChange={(e) => setSettings((s) => s ? { ...s, automation_service: e.target.value } : null)}
+                  >
+                    <option value="torbox">TorBox</option>
+                    <option value="realdebrid">Real-Debrid</option>
+                  </select>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="automationFailover"
+                  className="w-4 h-4 accent-accent bg-bg-deep border-border"
+                  checked={settings?.automation_failover ?? true}
+                  onChange={(e) => setSettings((s) => s ? { ...s, automation_failover: e.target.checked } : null)}
+                />
+                <label htmlFor="automationFailover" className="text-sm font-mono text-text-main cursor-pointer select-none">
+                  {t.settings.failoverLabel}
+                </label>
+              </div>
+            </div>
+
             {/* App Updates */}
             <div className="mt-6 pt-4 border-t border-border">
               <div className="flex items-center justify-between gap-3">

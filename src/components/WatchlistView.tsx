@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookMarked, Plus, Play, Pause, RefreshCw, Trash2, MonitorCheck, Search } from 'lucide-react'
 import { useT } from '../i18n'
+import { http } from '../hooks/http'
 
 interface WatchItem {
   id: number
@@ -33,15 +34,6 @@ interface MonitorInfo {
   intervalMinutes: number
   running: boolean
   lastRun: string | null
-}
-
-async function http<T = any>(path: string, method = 'GET', body?: any): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  return (await res.json().catch(() => ({}))) as T
 }
 
 const PROFILE_ORDER = ['latino_first', 'latino_only', 'english_first'] as const

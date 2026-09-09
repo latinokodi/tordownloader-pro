@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Search, BookMarked, DownloadCloud, Compass, ScrollText, Settings } from 'lucide-react'
+import { LayoutDashboard, Search, BookMarked, DownloadCloud, Compass, ScrollText, Settings } from 'lucide-react'
 import { useT } from '../i18n'
 import { LangToggle } from '../i18n/LangToggle'
 
@@ -16,27 +16,33 @@ export const Sidebar = memo(function Sidebar({ activeNav, onNavChange, onSetting
 
   return (
     <aside className="w-64 border-r border-border bg-bg-panel flex flex-col z-10">
-      {/* Brand */}
+      {/* Brand — MediaPilot */}
       <div className="p-6 border-b border-border">
         <div className="flex items-center gap-3 mb-1">
-          <div className="w-8 h-8 bg-accent flex items-center justify-center text-bg-deep font-black font-mono">TB</div>
-          <span className="font-bold uppercase tracking-wider text-sm">TorDownloader</span>
+          <div className="w-8 h-8 bg-accent flex items-center justify-center text-bg-deep font-black font-mono">
+            <span className="translate-x-[0.5px] translate-y-[-0.5px]">▶</span>
+          </div>
+          <div className="leading-none">
+            <span className="font-black uppercase tracking-wider text-sm text-text-heading">Media<span className="text-accent">Pilot</span></span>
+            <div className="text-[9px] text-text-muted font-mono uppercase tracking-[0.2em] mt-1">Auto downloader</div>
+          </div>
         </div>
-        {appVersion && <span className="text-[10px] text-text-muted font-mono">v{appVersion}</span>}
+        {appVersion && <span className="text-[10px] text-text-muted font-mono mt-2 block">v{appVersion}</span>}
       </div>
 
       {/* Nav items */}
-      <nav className="flex-1 p-4 space-y-2">
+      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+        <NavItem icon={<LayoutDashboard size={16} />} label={t.nav.dashboard} active={activeNav === 'dashboard'} onClick={() => onNavChange('dashboard')} />
         <NavItem icon={<Search size={16} />} label={t.nav.search} active={activeNav === 'search'} onClick={() => onNavChange('search')} />
+        <NavItem icon={<Compass size={16} />} label={t.nav.discover} active={activeNav === 'discover'} onClick={() => onNavChange('discover')} />
         <NavItem icon={<BookMarked size={16} />} label={t.nav.watchlist} active={activeNav === 'watchlist'} onClick={() => onNavChange('watchlist')} />
         <NavItem
           icon={<DownloadCloud size={16} />}
-          label={t.nav.transfers}
+          label={t.nav.downloads}
           active={activeNav === 'downloads'}
           onClick={() => onNavChange('downloads')}
           badge={downloadCount > 0 ? downloadCount : undefined}
         />
-        <NavItem icon={<Compass size={16} />} label="Discover" active={activeNav === 'discover'} onClick={() => onNavChange('discover')} />
         <NavItem icon={<ScrollText size={16} />} label={t.nav.logs} active={activeNav === 'logs'} onClick={() => onNavChange('logs')} />
       </nav>
 

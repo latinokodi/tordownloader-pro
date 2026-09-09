@@ -20,6 +20,7 @@ const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => 
 const LogPanel = lazy(() => import('./components/LogPanel').then(m => ({ default: m.LogPanel })))
 const DiscoverView = lazy(() => import('./components/DiscoverView').then(m => ({ default: m.DiscoverView })))
 const WatchlistView = lazy(() => import('./components/WatchlistView').then(m => ({ default: m.WatchlistView })))
+const DashboardView = lazy(() => import('./components/DashboardView').then(m => ({ default: m.DashboardView })))
 
 const CLOUD_DONE_STATUSES = ['completed', 'cached', 'finished', 'downloaded']
 
@@ -33,7 +34,7 @@ function App() {
   const [magnetUrl, setMagnetUrl] = useState('')
   const [addingMagnet, setAddingMagnet] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [activeNav, setActiveNav] = useState('search')
+  const [activeNav, setActiveNav] = useState('dashboard')
   const [downloads, setDownloads] = useState<any[]>([])
   const [destFolder, setDestFolder] = useState('')
 
@@ -255,6 +256,17 @@ function App() {
         />
 
         <div className="flex-1 overflow-auto p-6">
+          {/* ── DASHBOARD (default) ── */}
+          {activeNav === 'dashboard' && (
+            <div className="h-full flex flex-col space-y-6 animate-fade-in">
+              <div className="glass-panel flex-1 overflow-auto p-4">
+                <Suspense fallback={<div className="text-text-muted font-mono text-sm p-4">Loading dashboard...</div>}>
+                  <DashboardView onNavigate={setActiveNav} showToast={showToast} />
+                </Suspense>
+              </div>
+            </div>
+          )}
+
           {/* ── SEARCH ── */}
           {activeNav === 'search' && (
             <div className="h-full flex flex-col space-y-6 animate-fade-in">
