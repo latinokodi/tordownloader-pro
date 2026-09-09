@@ -142,6 +142,10 @@ const es: TranslationKeys = {
     title: 'Registros del Sistema',
     clear: 'Limpiar',
     empty: 'Sin registros aún — la actividad aparecerá aquí',
+    search: 'Filtrar…',
+    filterAll: 'Todo',
+    filterNormal: 'Normal',
+    filterErrors: 'Errores',
   },
   settings: {
     title: 'Configuración del Sistema',

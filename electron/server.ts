@@ -28,7 +28,7 @@ const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'
 
 // ── Log collector (mirrors main.ts so the UI log panel works) ──
 const logBuffer: Array<{ ts: string; text: string; level: string }> = []
-const LOG_MAX = 500
+const LOG_MAX = 1500
 function sendLog(level: string, ...args: any[]) {
   const text = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
   const entry = { ts: new Date().toISOString().slice(11, 19), text, level }
@@ -39,9 +39,11 @@ function sendLog(level: string, ...args: any[]) {
 const _origLog = console.log
 const _origWarn = console.warn
 const _origError = console.error
+const _origDebug = console.debug
 console.log = (...a: any[]) => { _origLog(...a); sendLog('info', ...a) }
 console.warn = (...a: any[]) => { _origWarn(...a); sendLog('warn', ...a) }
 console.error = (...a: any[]) => { _origError(...a); sendLog('error', ...a) }
+console.debug = (...a: any[]) => { _origDebug(...a); sendLog('debug', ...a) }
 
 // ── Python spawn helpers (Linux: python3 + .py scripts) ──
 function scriptPath(scriptName: string): string {
@@ -745,7 +747,7 @@ const server = http.createServer((req, res) => {
 })
 
 server.listen(PORT, HOST, () => {
-  console.log(`[server] TorDownloader PRO web server listening on http://${HOST}:${PORT}`)
+  console.log(`[server] MediaPilot web server listening on http://${HOST}:${PORT}`)
 })
 
 process.on('SIGTERM', () => {

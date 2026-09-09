@@ -57,6 +57,15 @@ function formatETA(remainingBytes: number, speed: number): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
 
+function fmtBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '?'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = bytes
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
 function safeMkdirSync(dirPath: string) {
   if (!fs.existsSync(dirPath)) {
     try {
@@ -134,6 +143,16 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
       let record = getDownloadByTorboxId(tid);
       if (!record) continue;
 
+      // Transición de estado visible en los registros (sin spam de cada poll).
+      const prevStatus = (record.status || '').toLowerCase();
+      const prevProg = Number(record.progress) || 0;
+      const st = state.toLowerCase();
+      if (prevStatus && prevStatus !== st && st !== 'unknown') {
+        console.log(`[TorBox] "${name}": ${prevStatus} → ${st} (${progress}%)`);
+      } else if (progress > 0 && prevProg > 0 && progress - prevProg >= 5 && Math.floor(prevProg / 10) !== Math.floor(progress / 10)) {
+        console.debug(`[TorBox] "${name}": ${progress}%`);
+      }
+
       updateDownload(tid, {
         status: state,
         progress: progress,
@@ -185,6 +204,9 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
       let record = getDownloadByTorboxId(tid);
       if (!record) continue;
 
+      const prevStatus = (record.status || '').toLowerCase();
+      const prevProg = Number(record.progress) || 0;
+
       updateDownload(tid, {
         status: state,
         progress: progress,
@@ -215,6 +237,13 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
         } catch (err) {
           // getTorrentInfo may fail during early magnet conversion — that's OK
         }
+      }
+
+      // Transición de estado visible en los registros (sin spam de cada poll).
+      if (prevStatus && prevStatus !== effectiveState && effectiveState !== 'unknown') {
+        console.log(`[RD] "${name}": ${prevStatus} → ${effectiveState} (${progress}%)`);
+      } else if (progress > 0 && prevProg > 0 && progress - prevProg >= 5 && Math.floor(prevProg / 10) !== Math.floor(progress / 10)) {
+        console.debug(`[RD] "${name}": ${progress}%`);
       }
 
       // Auto-select all files when torrent is waiting for file selection
@@ -338,6 +367,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
         local_progress: Math.floor((idx / totalFiles) * 100),
         local_path: destFolder,
       });
+      console.log(`[Worker] TB "${dlData.name || tid}": descargando ${idx + 1}/${totalFiles} — ${fileName}${expectedSize > 0 ? ` (${fmtBytes(expectedSize)})` : ''}`)
       eventBus.emit('downloads-updated');
 
       let lastUpdate = 0;
@@ -370,6 +400,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
       if (!result.success) {
         throw new Error(`Failed to download ${fileName}: ${result.error}`);
       }
+      console.log(`[Worker] TB ✓ ${fileName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
 
       if (expectedSize > 0) {
         const actualSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
@@ -549,6 +580,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
         local_progress: Math.floor((idx / totalLinks) * 100),
         local_path: destFolder,
       });
+      console.log(`[Worker] RD "${dlData.filename || dlData.name || tid}": descargando ${idx + 1}/${totalLinks} — ${safeName}${expectedSize > 0 ? ` (${fmtBytes(expectedSize)})` : ''}`)
       eventBus.emit('downloads-updated');
 
       let lastUpdate = 0;
@@ -581,6 +613,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
       if (!result.success) {
         throw new Error(`Failed to download part ${idx + 1}: ${result.error}`);
       }
+      console.log(`[Worker] RD ✓ ${safeName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
 
       completedBytes += expectedSize || result.bytes_downloaded;
     }

@@ -65,6 +65,8 @@ export function runPythonJson(
       env: { ...process.env as any, ...env },
       windowsHide: true,
     })
+    const startedAt = Date.now()
+    console.debug(`[py] > ${scriptName} ${args.join(' ')}`)
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -75,6 +77,7 @@ export function runPythonJson(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      console.debug(`[py] < ${scriptName} (${((Date.now() - startedAt) / 1000).toFixed(1)}s, ${stdout.length} bytes)`)
       try {
         resolve(stdout.trim() ? JSON.parse(stdout) : null)
       } catch {
@@ -108,6 +111,8 @@ export function runPythonLines(
       env: { ...process.env as any, ...env },
       windowsHide: true,
     })
+    const startedAt = Date.now()
+    console.debug(`[py] > ${scriptName} ${args.join(' ')}`)
     let buffer = ''
     const events: any[] = []
     let settled = false
@@ -126,6 +131,7 @@ export function runPythonLines(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      console.debug(`[py] < ${scriptName} (${((Date.now() - startedAt) / 1000).toFixed(1)}s, ${events.length} eventos)`)
       resolve(events)
     })
     proc.on('error', () => {

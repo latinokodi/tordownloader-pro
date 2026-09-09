@@ -189,7 +189,19 @@ async function searchLatino(target: GrabTarget, apiKey: string): Promise<GrabRes
   }
   const env: Record<string, string> = {}
   if (apiKey) env.TMDB_API_KEY = apiKey
+  const startedAt = Date.now()
   const events = await runPythonLines('latino-providers.py', args, env, 75_000)
+  const providerCounts = new Map<string, number>()
+  for (const ev of events) {
+    if (ev && ev.type === 'provider_results' && Array.isArray(ev.results)) {
+      providerCounts.set(String(ev.provider || '?'), (providerCounts.get(String(ev.provider || '?')) || 0) + ev.results.length)
+    }
+  }
+  const counts = [...providerCounts.entries()].map(([p, n]) => `${p}: ${n}`).join(' · ') || 'sin eventos'
+  const who = target.kind === 'episode' && target.season && target.episode
+    ? `${target.title} S${pad2(target.season)}E${pad2(target.episode)}`
+    : `${target.title} (${target.year || '?'})`
+  console.debug(`[grab] latino ▸ ${who}: ${counts} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`)
   const out: GrabResultItem[] = []
   for (const ev of events) {
     if (ev && ev.type === 'provider_results' && Array.isArray(ev.results)) {
@@ -220,7 +232,9 @@ async function searchEnglish(target: GrabTarget): Promise<GrabResultItem[]> {
   } else if (target.season && target.episode) {
     query = `${base} S${pad2(target.season)}E${pad2(target.episode)}`
   }
+  const startedAt = Date.now()
   const events = await runPythonLines('meta-search.py', ['--stream', '--jackett-only', query], {}, 70_000)
+  console.debug(`[grab] jackett ▸ "${query}": ${events.length} eventos (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`)
   const out: GrabResultItem[] = []
   for (const ev of events) {
     if (ev && ev.type === 'engine_results' && Array.isArray(ev.results)) {
@@ -393,6 +407,7 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     }
 
     const best = chooseBest(results, target)
+    if (best) console.log(`[grab] elegido: ${best.title} (${best.size}) [${best.indexer}]`)
     if (!best) continue
     const type: 'movie' | 'series' = target.kind === 'movie' ? 'movie' : 'series'
     for (const svc of services) {

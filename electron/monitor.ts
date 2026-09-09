@@ -140,6 +140,7 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
   const label = isMovie
     ? `"${item.title}"`
     : `"${item.title}" S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+  log(`→ intento ${attemptNumber} — ${label} (perfil: ${profile})`)
 
   const targetForGrab: GrabTarget = {
     watchlist_id: item.id,
@@ -174,7 +175,11 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
     log(`✗ ${label} error: ${outcome.error} — reintento en ${delayMin} min`)
     return 'error'
   }
-  if (attemptNumber === 1) log(`— ${label} sin fuente latino/EN todavía — reintento en ${delayMin} min`)
+  if (attemptNumber === 1) {
+    log(`— ${label} sin fuente latino/EN todavía — reintento en ${delayMin} min`)
+  } else {
+    console.debug(`[Monitor] ${label}: aún sin fuente (intento ${attemptNumber}) — próxima ventana en ${delayMin} min`)
+  }
   return 'waiting'
 }
 
@@ -229,6 +234,12 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
         movieTargets.push({ kind: 'movie' }) // wanted right now — first attempt
       }
     }
+    const movieState = movieTargets.length
+      ? (movieTargets[0].tracked ? 'reintento (backoff)' : 'estrenada — intento inmediato')
+      : isGrabbed(item.tmdb_id, 'movie', null, null)
+        ? 'ya descargada'
+        : 'futura / no disponible'
+    console.debug(`[Monitor] "${item.title}" (película) — ${movieState}`)
     for (const t of movieTargets) {
       if (t.tracked) {
         const att = getAttempt(item.tmdb_id, 'movie', null, null)
@@ -298,6 +309,16 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
   // Newest targets first; backfills are capped per tick.
   fresh.sort((a, b) => (b.season! - a.season!) || (b.episode! - a.episode!))
   const targets = fresh.slice(0, MAX_TARGETS_PER_TICK)
+
+  const seasonTag = airedSeasons.length > 0 ? `S${Number([...airedSeasons].sort((a: any, b: any) => Number(b.season_number) - Number(a.season_number))[0].season_number)}` : '—'
+  const targetNames = targets
+    .map((t) => (t.kind === 'movie' ? 'película' : `${t.tracked ? '*' : ''}S${String(t.season).padStart(2, '0')}E${String(t.episode).padStart(2, '0')}`))
+    .join(', ')
+  if (targets.length > 0) {
+    console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] → ${targets.length} objetivo(s): ${targetNames}`)
+  } else {
+    console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] — sin objetivos (idle)`)
+  }
 
   for (const t of targets) {
     if (t.tracked) {

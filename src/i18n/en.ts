@@ -139,7 +139,11 @@ const en = {
   logs: {
     title: 'System Logs',
     clear: 'Clear',
-    empty: 'No logs yet — activity will appear here',
+    empty: 'No activity yet — events will show up here',
+    search: 'Filter…',
+    filterAll: 'All',
+    filterNormal: 'Normal',
+    filterErrors: 'Errors',
   },
   settings: {
     title: 'System Settings',
