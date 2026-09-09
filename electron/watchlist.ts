@@ -2,6 +2,7 @@
 // plus grab-history bookkeeping. The monitor + grabber are the only writers;
 // server.ts exposes these over HTTP.
 import { getDB, getSettings, type WatchlistItem, type GrabHistoryRow, type LanguageProfile } from './db'
+import { deleteAttemptsForTmdb } from './attempts'
 
 export const LANGUAGE_PROFILES: LanguageProfile[] = ['latino_first', 'latino_only', 'english_first']
 
@@ -110,9 +111,13 @@ export function updateWatchlistItem(id: number, patch: Partial<Pick<WatchlistIte
 
 export function removeWatchlistItem(id: number): boolean {
   const db = getDB()
-  if (!getWatchlistItem(id)) return false
+  const item = getWatchlistItem(id)
+  if (!item) return false
   db.prepare('DELETE FROM watchlist WHERE id = ?').run(id)
   db.prepare('DELETE FROM grab_history WHERE watchlist_id = ?').run(id)
+  try {
+    deleteAttemptsForTmdb(item.tmdb_id)
+  } catch { /* attempts table may not exist on very old DBs */ }
   return true
 }
 

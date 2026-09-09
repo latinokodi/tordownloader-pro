@@ -1,11 +1,18 @@
 // monitor.ts — Sonarr/Radarr-style automation loop for the watchlist.
-// Every interval it asks TMDB which monitored movies/series have targets due
-// (movie release date passed, or episodes aired after the item was added and
-// not yet grabbed) and hands each one to the grabber. Fully serialized —
-// a tick never overlaps itself; state survives restarts via settings.
+//
+// Semantics (matching how Sonarr/Radarr actually work):
+//  - The TMDB air/release DATE decides when a target becomes WANTED.
+//    Nothing is searched before it is wanted.
+//  - When a target becomes wanted the monitor attempts it once right away
+//    (next tick after the date passes), then only retries on a decaying
+//    backoff schedule (attempts.ts: 1h → 2h → 4h → 8h → 12h → daily),
+//    persisted across restarts. Ticks are cheap dispatchers, not blanket
+//    per-episode searches every cycle.
+//  - A target stops being wanted once grabbed or the item is removed.
 import { getSettings, updateSettings, type WatchlistItem } from './db'
 import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem } from './watchlist'
-import { grab, type GrabTarget } from './grabber'
+import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, nextDelayMinutes, type MonitorAttempt } from './attempts'
+import { grab, type GrabTarget, type GrabOutcome } from './grabber'
 import { tmdbDetail, tmdbSeason } from './tmdb'
 import { setupSearchEnv } from './python-run'
 import { eventBus } from './event-bus'
@@ -15,7 +22,7 @@ export interface MonitorStatus {
   intervalMinutes: number
   running: boolean
   lastRun: string | null
-  lastSummary: { processed: number; grabbed: number; noSource: number; errors: number } | null
+  lastSummary: { processed: number; grabbed: number; waiting: number; deferred: number; errors: number } | null
 }
 
 let tickTimer: NodeJS.Timeout | null = null
@@ -31,7 +38,6 @@ function isoDateOf(isoOrDate: string): string {
   return String(isoOrDate || '').slice(0, 10)
 }
 
-/** Format SxxEyy with an air date for the watchlist next_episode cache. */
 function fmtNext(season?: number, episode?: number, airDate?: string): string {
   if (!season || !episode) return ''
   const s = String(season).padStart(2, '0')
@@ -58,55 +64,79 @@ interface DueTarget {
   kind: 'movie' | 'episode'
   season?: number
   episode?: number
+  // true = already in the attempts table (backoff state exists, retry path)
+  tracked?: boolean
 }
 
-/** Compute the due targets for one watchlist item (no network — cached data only). */
-function targetsForDetail(item: WatchlistItem, detail: any): DueTarget[] {
+async function dueEpisodes(item: WatchlistItem, seasonNumber: number): Promise<DueTarget[]> {
   const today = todayIso()
   const addedDate = isoDateOf(item.added_at)
-
-  if (item.media_type === 'movie') {
-    const releaseDate = isoDateOf(detail?.release_date || '')
-    const status = detail?.status || ''
-    if (!releaseDate) return [] // no release date yet — nothing to watch for
-    const released = releaseDate <= today
-    const cancelled = /cancelled|rumored/i.test(status)
-    if (!released || cancelled) return []
-    if (isGrabbed(item.tmdb_id, 'movie', null, null)) return []
-    return [{ kind: 'movie' }]
-  }
-
-  // series: only the currently-airing season can contain "new since add" eps.
-  const seasons: any[] = (detail?.seasons || []).filter((s: any) => Number(s.season_number) > 0)
-  if (seasons.length === 0) return []
-  const airing = seasons.filter((s: any) => !s.air_date || isoDateOf(s.air_date) <= today)
-  if (airing.length === 0) return []
-  const current = [...airing].sort((a, b) => Number(b.season_number) - Number(a.season_number))[0]
-  return [{ kind: 'episode', season: Number(current.season_number) }]
-}
-
-/** Given the current season's episode list, which episodes are due? */
-function dueEpisodes(item: WatchlistItem, seasonNumber: number, episodes: any[]): Array<{ season: number; episode: number }> {
-  const today = todayIso()
-  const addedDate = isoDateOf(item.added_at)
-  const due: Array<{ season: number; episode: number }> = []
-  for (const ep of episodes || []) {
+  const epList = await tmdbSeason(item.tmdb_id, seasonNumber)
+  const due: DueTarget[] = []
+  for (const ep of epList?.episodes || []) {
     const airDate = isoDateOf(ep?.air_date || '')
-    if (!airDate) continue // no air date → cannot verify "new since add"; skip (no backfill)
-    if (airDate > today) continue // future
-    if (airDate < addedDate) continue // aired before the item was added → backfill, not wanted
+    if (!airDate || airDate > today || airDate < addedDate) continue // future, unknown, or pre-add (no backfill)
     const epNum = Number(ep?.episode_number)
     if (!epNum) continue
     if (isGrabbed(item.tmdb_id, 'series', seasonNumber, epNum)) continue
-    due.push({ season: seasonNumber, episode: epNum })
+    const tracked = Boolean(getAttempt(item.tmdb_id, 'series', seasonNumber, epNum))
+    due.push({ kind: 'episode', season: seasonNumber, episode: epNum, tracked })
   }
   return due
 }
 
-/** Refresh cached next_episode display string on the watchlist row. */
+/** One grab attempt for a concrete wanted target, with backoff bookkeeping. */
+async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget): Promise<'grabbed' | 'waiting' | 'error'> {
+  const isMovie = target.kind === 'movie'
+  const season = isMovie ? null : (target.season ?? null)
+  const episode = isMovie ? null : (target.episode ?? null)
+
+  const profile = item.language_profile
+  const attemptNumber = (getAttempt(item.tmdb_id, item.media_type, season, episode)?.attempts || 0) + 1
+  const label = isMovie
+    ? `"${item.title}"`
+    : `"${item.title}" S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+
+  const targetForGrab: GrabTarget = {
+    watchlist_id: item.id,
+    tmdb_id: item.tmdb_id,
+    media_type: item.media_type,
+    imdb_id: item.imdb_id || detail?.imdb_id || undefined,
+    title: detail?.original_title || item.title,
+    year: detail?.year || undefined,
+    kind: isMovie ? 'movie' : 'episode',
+    season: season ?? undefined,
+    episode: episode ?? undefined,
+    language_profile: profile,
+  }
+
+  let outcome: GrabOutcome
+  try {
+    outcome = await grab(targetForGrab)
+  } catch (e: any) {
+    outcome = { ok: false, status: 'error', error: e?.message || String(e), latinoResults: 0, englishResults: 0, profile }
+  }
+
+  if (outcome.status === 'grabbed') {
+    deleteAttempt(item.tmdb_id, item.media_type, season, episode)
+    log(`✓ ${label} → ${outcome.language} (${outcome.source}) [${outcome.service}]`)
+    return 'grabbed'
+  }
+
+  // Missed (no source) or failed — schedule the next attempt with backoff.
+  const delayMin = nextDelayMinutes(attemptNumber)
+  recordAttempt(item.tmdb_id, item.media_type, season, episode, isMovie ? 'movie' : 'episode', profile, delayMin)
+  if (outcome.status === 'error') {
+    log(`✗ ${label} error: ${outcome.error} — reintento en ${delayMin} min`)
+    return 'error'
+  }
+  if (attemptNumber === 1) log(`— ${label} sin fuente latino/EN todavía — reintento en ${delayMin} min`)
+  return 'waiting'
+}
+
 async function refreshNextEpisode(item: WatchlistItem, detail: any): Promise<void> {
   try {
-    if (item.media_type !== 'series') return // movies have no per-episode counter
+    if (item.media_type !== 'series') return
     const nex = detail?.next_episode_to_air
     if (nex?.season_number && nex?.episode_number) {
       updateWatchlistItem(item.id, { next_episode: fmtNext(nex.season_number, nex.episode_number, nex.air_date) })
@@ -132,54 +162,87 @@ async function fetchDetailCached(item: WatchlistItem): Promise<any | null> {
   return cached?.detail ?? null
 }
 
-async function checkItem(item: WatchlistItem): Promise<{ status: string; grabbed: number }> {
+async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waiting: number; deferred: number; errors: number }> {
+  const res = { grabbed: 0, waiting: 0, deferred: 0, errors: 0 }
   const detail = await fetchDetailCached(item)
   if (!detail) {
+    res.errors += 1
     updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
-    return { status: 'no_metadata', grabbed: 0 }
+    return res
   }
-  // Persist imdb id + refreshed metadata when the detail provides them.
   if (!item.imdb_id && detail.imdb_id) updateWatchlistItem(item.id, { imdb_id: detail.imdb_id })
   await refreshNextEpisode(item, detail)
 
-  const targets = targetsForDetail(item, detail)
-  let grabbed = 0
-
-  for (const t of targets) {
-    if (t.kind === 'movie') {
-      const out = await grab({
-        watchlist_id: item.id,
-        tmdb_id: item.tmdb_id,
-        media_type: 'movie',
-        imdb_id: item.imdb_id || detail.imdb_id || undefined,
-        title: detail.original_title || item.title,
-        year: detail.year || undefined,
-        kind: 'movie',
-        language_profile: item.language_profile,
-      })
-      grabbed += out.status === 'grabbed' ? 1 : 0
-    } else if (t.season) {
-      const epList = await tmdbSeason(item.tmdb_id, t.season)
-      const due = dueEpisodes(item, t.season, epList?.episodes || [])
-      for (const ep of due) {
-        const out = await grab({
-          watchlist_id: item.id,
-          tmdb_id: item.tmdb_id,
-          media_type: 'series',
-          imdb_id: item.imdb_id || detail.imdb_id || undefined,
-          title: detail.original_title || item.title,
-          season: ep.season,
-          episode: ep.episode,
-          kind: 'episode',
-          language_profile: item.language_profile,
-        })
-        if (out.status === 'grabbed') grabbed += 1
-        else if (out.status === 'error') log(`grab error ${item.title} S${ep.season}E${ep.episode}: ${out.error}`)
+  if (item.media_type === 'movie') {
+    const movieTargets: DueTarget[] = []
+    const trackedMovie = getAttempt(item.tmdb_id, 'movie', null, null)
+    if (trackedMovie) {
+      movieTargets.push({ kind: 'movie', tracked: true })
+    } else {
+      const releaseDate = isoDateOf(detail?.release_date || '')
+      const status = detail?.status || ''
+      if (releaseDate && releaseDate <= todayIso() && !/cancelled|rumored/i.test(status) && !isGrabbed(item.tmdb_id, 'movie', null, null)) {
+        movieTargets.push({ kind: 'movie' }) // wanted right now — first attempt
       }
     }
+    for (const t of movieTargets) {
+      if (t.tracked) {
+        const att = getAttempt(item.tmdb_id, 'movie', null, null)
+        if (!att) continue // row vanished — nothing to retry
+        if (att.next_attempt && att.next_attempt > new Date().toISOString()) {
+          res.deferred += 1
+          continue
+        }
+        if (isGrabbed(item.tmdb_id, 'movie', null, null)) {
+          deleteAttempt(item.tmdb_id, 'movie', null, null)
+          continue
+        }
+      }
+      const state = await attemptTarget(item, detail, t)
+      if (state === 'grabbed') res.grabbed += 1
+      else if (state === 'error') res.errors += 1
+      else res.waiting += 1
+    }
+    // Idle (not wanted yet) items simply contribute nothing to the summary.
+    updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
+    return res
   }
+
+  // series: wanted = current-season fresh scan + tracked stale-season rows.
+  const seasons: any[] = (detail?.seasons || []).filter((s: any) => Number(s.season_number) > 0)
+  const airing = seasons.filter((s: any) => !s.air_date || isoDateOf(s.air_date) <= todayIso())
+  const candidates: DueTarget[] = []
+  if (airing.length > 0) {
+    const current = [...airing].sort((a, b) => Number(b.season_number) - Number(a.season_number))[0]
+    candidates.push(...(await dueEpisodes(item, Number(current.season_number))))
+  }
+  for (const a of attemptsForTitle(item.tmdb_id)) {
+    if (a.kind !== 'episode' || a.season === null || a.episode === null) continue
+    const already = candidates.some((c) => c.season === a.season && c.episode === a.episode)
+    if (!already) candidates.push({ kind: 'episode', season: a.season, episode: a.episode, tracked: true })
+  }
+
+  for (const t of candidates) {
+    if (t.tracked) {
+      const att = getAttempt(item.tmdb_id, 'series', t.season!, t.episode!)
+      if (att && att.next_attempt && att.next_attempt > new Date().toISOString()) {
+        res.deferred += 1
+        continue
+      }
+      // Episode got grabbed out-of-band (manual download)? Drop the row.
+      if (isGrabbed(item.tmdb_id, 'series', t.season!, t.episode!)) {
+        deleteAttempt(item.tmdb_id, 'series', t.season!, t.episode!)
+        continue
+      }
+    }
+    const state = await attemptTarget(item, detail, t)
+    if (state === 'grabbed') res.grabbed += 1
+    else if (state === 'error') res.errors += 1
+    else res.waiting += 1
+  }
+  // Idle series (all aired episodes already grabbed) contribute nothing.
   updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
-  return { status: 'ok', grabbed }
+  return res
 }
 
 /** One full pass over the watchlist. Never runs concurrently with itself. */
@@ -194,7 +257,7 @@ export async function runMonitorTick(force = false): Promise<MonitorStatus['last
     return lastSummary
   }
   running = true
-  const summary = { processed: 0, grabbed: 0, noSource: 0, errors: 0 }
+  const summary = { processed: 0, grabbed: 0, waiting: 0, deferred: 0, errors: 0 }
   try {
     setupSearchEnv(settings)
     const items = listWatchlist().filter((i) => i.monitored)
@@ -203,21 +266,21 @@ export async function runMonitorTick(force = false): Promise<MonitorStatus['last
       summary.processed += 1
       try {
         const res = await checkItem(item)
-        if (res.grabbed > 0) summary.grabbed += res.grabbed
-        else if (res.status === 'no_metadata') summary.errors += 1
-        else summary.noSource += 1
+        summary.grabbed += res.grabbed
+        summary.waiting += res.waiting
+        summary.deferred += res.deferred
+        summary.errors += res.errors
       } catch (e: any) {
         summary.errors += 1
         log(`item "${item.title}" failed: ${e.message}`)
       }
-      // Be gentle with the provider sites: small pause between items.
       await new Promise((r) => setTimeout(r, 800))
     }
     const iso = new Date().toISOString()
     lastRun = iso
     updateSettings({ last_monitor_run: iso })
     lastSummary = summary
-    log(`tick done — processed=${summary.processed} grabbed=${summary.grabbed} waiting=${summary.noSource} errors=${summary.errors}`)
+    log(`tick done — processed=${summary.processed} grabbed=${summary.grabbed} waiting=${summary.waiting} deferred=${summary.deferred} errors=${summary.errors}`)
     eventBus.emit('monitor-updated', { ...getMonitorStatus(), lastSummary: summary })
   } catch (e: any) {
     summary.errors += 1
@@ -243,7 +306,7 @@ export function forceCheckItem(itemId: number): boolean {
     try {
       log(`force check — "${item.title}"`)
       const res = await checkItem(item)
-      log(`force check done — ${item.title}: grabbed=${res.grabbed}`)
+      log(`force check done — ${item.title}: grabbed=${res.grabbed} waiting=${res.waiting} errors=${res.errors}`)
       updateSettings({ last_monitor_run: new Date().toISOString() })
       eventBus.emit('monitor-updated', { ...getMonitorStatus(), lastSummary })
     } finally {
@@ -260,14 +323,12 @@ export function startMonitor(): void {
   const minutes = Math.max(5, Number(settings.monitor_interval_minutes) || 30)
   log(`starting — interval ${minutes} min (enabled=${Boolean(settings.monitor_enabled)})`)
   if (settings.monitor_enabled) {
-    // Initial pass shortly after boot, then on the interval.
     setTimeout(() => kickMonitor(), 8_000)
   }
   tickTimer = setInterval(() => {
     const s = getSettings()
     if (s.monitor_interval_minutes !== minutes) {
-      // Settings changed — restart the loop with the new interval.
-      startMonitor()
+      startMonitor() // settings changed — restart the loop with the new interval
       return
     }
     if (s.monitor_enabled) kickMonitor()

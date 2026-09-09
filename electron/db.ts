@@ -101,6 +101,21 @@ export function initDB(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_grab_uniq ON grab_history(tmdb_id, media_type, season, episode);
     CREATE INDEX IF NOT EXISTS idx_grab_wl ON grab_history(watchlist_id);
+
+    CREATE TABLE IF NOT EXISTS monitor_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tmdb_id INTEGER NOT NULL,
+      media_type TEXT NOT NULL,
+      season INTEGER,
+      episode INTEGER,
+      kind TEXT NOT NULL DEFAULT 'episode',
+      first_due VARCHAR DEFAULT '',
+      last_attempt VARCHAR DEFAULT '',
+      attempts INTEGER DEFAULT 0,
+      next_attempt VARCHAR DEFAULT '',
+      language_profile VARCHAR DEFAULT 'latino_first',
+      UNIQUE(tmdb_id, media_type, season, episode)
+    );
   `)
 
   // Migration: add columns that may not exist in older schema
