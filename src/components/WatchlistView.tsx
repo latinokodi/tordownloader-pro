@@ -16,6 +16,17 @@ interface WatchItem {
   language_profile: 'latino_first' | 'latino_only' | 'english_first'
   backfill: 'new' | 'last_episode' | 'last_season' | 'first_season' | 'all'
   monitored: boolean
+  lastGrab?: {
+    kind: string
+    media_type: string
+    title: string
+    season: number | null
+    episode: number | null
+    language: string
+    source: string
+    status: string
+    grabbed_at: string
+  } | null
   added_at: string
   last_checked: string
   next_episode: string
@@ -45,6 +56,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
   const [items, setItems] = useState<WatchItem[]>([])
   const [monitor, setMonitor] = useState<MonitorInfo | null>(null)
   const [busy, setBusy] = useState(false)
+  const [checkingId, setCheckingId] = useState<number | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [q, setQ] = useState('')
   const [searching, setSearching] = useState(false)
@@ -187,14 +199,28 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
   }, [refresh, showToast, t])
 
   const checkItem = useCallback(async (id: number) => {
+    setCheckingId(id)
+    showToast(t.watchlist.checkStarted)
     try {
       const res = await http<any>(`/api/watchlist/${id}/check`, 'POST')
       if (!res?.success) showToast(res?.error || t.toasts.error, 'error')
     } catch (e: any) {
       showToast(e?.message || t.toasts.error, 'error')
     }
-    window.setTimeout(() => { refresh().catch(() => {}); onActivity() }, 3500)
+    window.setTimeout(() => {
+      setCheckingId(null)
+      refresh().catch(() => {})
+      onActivity()
+    }, 4000)
   }, [onActivity, refresh, showToast, t])
+
+  const lastGrabText = useCallback((g: NonNullable<WatchItem['lastGrab']>): string => {
+    const lang = g.language === 'latino' ? t.watchlist.langLatino : t.watchlist.langEnglish
+    if (g.kind === 'episode' && g.season && g.episode) {
+      return `S${String(g.season).padStart(2, '0')}E${String(g.episode).padStart(2, '0')} · ${lang}`
+    }
+    return lang
+  }, [t])
 
   const runAll = useCallback(async () => {
     setBusy(true)
@@ -400,11 +426,12 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                     {item.monitored ? <Pause size={15} /> : <Play size={15} />}
                   </button>
                   <button
-                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors"
+                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors disabled:opacity-60"
                     title={t.watchlist.checkNow}
                     onClick={() => checkItem(item.id)}
+                    disabled={checkingId === item.id}
                   >
-                    <RefreshCw size={15} />
+                    <RefreshCw size={15} className={checkingId === item.id ? 'animate-spin' : ''} />
                   </button>
                   <button
                     className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
@@ -425,6 +452,15 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                   {item.year || '—'}
                   {item.media_type === 'series' && item.next_episode ? ` · ${item.next_episode}` : ''}
                 </div>
+                {item.lastGrab && item.lastGrab.status === 'grabbed' && (
+                  <div
+                    className="text-[11px] text-success truncate flex items-center gap-1"
+                    title={`${item.lastGrab.title || item.title} · ${new Date(item.lastGrab.grabbed_at).toLocaleString()}`}
+                  >
+                    <span className="font-bold">✓</span>
+                    <span className="truncate">{lastGrabText(item.lastGrab)}</span>
+                  </div>
+                )}
                 <div className="flex flex-col gap-1 mt-auto">
                   <select
                     className="input-field w-full py-1 text-[11px]"

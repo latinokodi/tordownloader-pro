@@ -31,7 +31,18 @@ function rowToItem(row: any): WatchlistItem {
 export function listWatchlist(): WatchlistItem[] {
   const db = getDB()
   const rows = db.prepare('SELECT * FROM watchlist ORDER BY added_at DESC, id DESC').all() as any[]
-  return rows.map(rowToItem)
+  const items = rows.map(rowToItem)
+  if (items.length === 0) return items
+  // Enriquecer cada ítem con su grab más reciente (para mostrarlo en la tarjeta).
+  const placeholders = items.map(() => '?').join(',')
+  const lastRows = db.prepare(
+    `SELECT g.* FROM grab_history g
+     INNER JOIN (SELECT watchlist_id, MAX(id) AS mid FROM grab_history GROUP BY watchlist_id) m
+       ON g.id = m.mid
+     WHERE g.watchlist_id IN (${placeholders})`,
+  ).all(...items.map((i) => i.id)) as GrabHistoryRow[]
+  const byWl = new Map(lastRows.map((r) => [r.watchlist_id, r]))
+  return items.map((i) => ({ ...(i as any), lastGrab: byWl.get(i.id) ?? null })) as WatchlistItem[]
 }
 
 export function getWatchlistItem(id: number): WatchlistItem | undefined {

@@ -54,6 +54,9 @@ const es: TranslationKeys = {
     scopeLastSeason: 'Última temporada',
     scopeFirstSeason: 'Primera temporada',
     scopeAll: 'Todo (serie completa)',
+    checkStarted: 'Verificación lanzada en segundo plano — mira Descargas',
+    langLatino: 'latino',
+    langEnglish: 'inglés',
   },
   dashboard: {
     title: 'Automatización',

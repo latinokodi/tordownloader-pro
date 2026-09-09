@@ -52,6 +52,9 @@ const en = {
     scopeLastSeason: 'Latest season',
     scopeFirstSeason: 'First season',
     scopeAll: 'Everything (full series)',
+    checkStarted: 'Background check started — watch the downloads',
+    langLatino: 'latino',
+    langEnglish: 'english',
   },
   dashboard: {
     title: 'Automation',
