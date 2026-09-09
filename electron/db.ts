@@ -75,6 +75,7 @@ export function initDB(): void {
       backdrop TEXT DEFAULT '',
       imdb_id TEXT DEFAULT '',
       language_profile TEXT DEFAULT 'latino_first',
+      backfill TEXT DEFAULT 'new',
       monitored BOOLEAN DEFAULT 1,
       added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       last_checked VARCHAR DEFAULT '',
@@ -140,6 +141,7 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN jackett_api_key VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN last_monitor_run VARCHAR DEFAULT ''`,
     `ALTER TABLE downloads ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
+    `ALTER TABLE watchlist ADD COLUMN backfill VARCHAR DEFAULT 'new'`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
@@ -154,6 +156,7 @@ export function initDB(): void {
 
 export type DebridService = 'torbox' | 'realdebrid'
 export type LanguageProfile = 'latino_first' | 'latino_only' | 'english_first'
+export type BackfillScope = 'new' | 'last_episode' | 'last_season' | 'first_season' | 'all'
 
 export interface Settings {
   id: number;
@@ -206,6 +209,7 @@ export interface WatchlistItem {
   backdrop: string;
   imdb_id: string;
   language_profile: LanguageProfile;
+  backfill: BackfillScope;
   monitored: boolean;
   added_at: string;
   last_checked: string;

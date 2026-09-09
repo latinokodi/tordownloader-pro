@@ -14,6 +14,7 @@ interface WatchItem {
   backdrop: string
   imdb_id: string
   language_profile: 'latino_first' | 'latino_only' | 'english_first'
+  backfill: 'new' | 'last_episode' | 'last_season' | 'first_season' | 'all'
   monitored: boolean
   added_at: string
   last_checked: string
@@ -37,6 +38,7 @@ interface MonitorInfo {
 }
 
 const PROFILE_ORDER = ['latino_first', 'latino_only', 'english_first'] as const
+const SCOPE_ORDER = ['new', 'last_episode', 'last_season', 'first_season', 'all'] as const
 
 export function WatchlistView({ showToast, onActivity }: { showToast: (msg: string, type?: 'success' | 'error') => void; onActivity: () => void }) {
   const t = useT()
@@ -48,6 +50,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
   const [searching, setSearching] = useState(false)
   const [hits, setHits] = useState<TmdbHit[]>([])
   const [pendingProfile, setPendingProfile] = useState('latino_first')
+  const [pendingScope, setPendingScope] = useState<'new' | 'last_episode' | 'last_season' | 'first_season' | 'all'>('new')
 
   const refresh = useCallback(async () => {
     try {
@@ -105,6 +108,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
         overview: hit.overview,
         poster: hit.poster,
         language_profile: pendingProfile,
+        backfill: hit.media_type === 'tv' ? pendingScope : 'new',
       })
       if (res?.success) {
         showToast(res.created ? t.watchlist.addedToast : t.watchlist.alreadyAdded)
@@ -145,6 +149,16 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
     }
   }, [refresh, showToast, t])
 
+  const setBackfill = useCallback(async (item: WatchItem, backfill: string) => {
+    try {
+      const res = await http<any>(`/api/watchlist/${item.id}`, 'PATCH', { backfill })
+      if (res?.success) await refresh()
+      else showToast(res?.error || t.toasts.error, 'error')
+    } catch (e: any) {
+      showToast(e?.message || t.toasts.error, 'error')
+    }
+  }, [refresh, showToast, t])
+
   const toggleMonitored = useCallback(async (item: WatchItem) => {
     try {
       const res = await http<any>(`/api/watchlist/${item.id}`, 'PATCH', { monitored: !item.monitored })
@@ -177,6 +191,13 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
 
   const profileLabel = (p: string) =>
     p === 'latino_only' ? t.watchlist.latinoOnly : p === 'english_first' ? t.watchlist.englishFirst : t.watchlist.latinoFirst
+
+  const scopeLabel = (s: string) =>
+    s === 'last_episode' ? t.watchlist.scopeLastEp
+      : s === 'last_season' ? t.watchlist.scopeLastSeason
+        : s === 'first_season' ? t.watchlist.scopeFirstSeason
+          : s === 'all' ? t.watchlist.scopeAll
+            : t.watchlist.scopeNew
 
   return (
     <div className="h-full flex flex-col space-y-6 animate-fade-in">
@@ -229,13 +250,24 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
               {searching ? t.watchlist.searching : t.watchlist.searchBtn}
             </button>
           </div>
-          <div className="flex items-center gap-3 text-xs">
-            <span className="text-text-muted font-mono uppercase tracking-wider">{t.watchlist.profile}</span>
-            <select className="input-field w-auto py-1 text-xs" value={pendingProfile} onChange={(e) => setPendingProfile(e.target.value)}>
-              {PROFILE_ORDER.map((p) => (
-                <option key={p} value={p}>{profileLabel(p)}</option>
-              ))}
-            </select>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-xs">
+            <div className="flex items-center gap-3">
+              <span className="text-text-muted uppercase tracking-wider">{t.watchlist.profile}</span>
+              <select className="input-field w-auto py-1 text-xs" value={pendingProfile} onChange={(e) => setPendingProfile(e.target.value)}>
+                {PROFILE_ORDER.map((p) => (
+                  <option key={p} value={p}>{profileLabel(p)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-text-muted uppercase tracking-wider">{t.watchlist.scope}</span>
+              <select className="input-field w-auto py-1 text-xs" value={pendingScope} onChange={(e) => setPendingScope(e.target.value as any)} title={t.watchlist.scope}>
+                {SCOPE_ORDER.map((s) => (
+                  <option key={s} value={s}>{scopeLabel(s)}</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-text-muted">(series)</span>
+            </div>
           </div>
           {hits.length > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 max-h-[26rem] overflow-auto pr-1 pb-1">
@@ -312,6 +344,18 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                   <option key={p} value={p}>{profileLabel(p)}</option>
                 ))}
               </select>
+              {item.media_type === 'series' && (
+                <select
+                  className="input-field w-auto py-1 text-[11px] font-mono max-w-[10rem]"
+                  value={item.backfill || 'new'}
+                  onChange={(e) => setBackfill(item, e.target.value)}
+                  title={t.watchlist.scope}
+                >
+                  {SCOPE_ORDER.map((s) => (
+                    <option key={s} value={s}>{scopeLabel(s)}</option>
+                  ))}
+                </select>
+              )}
               <button
                 className="btn border border-border text-xs px-2.5 py-1.5 hover:border-accent hover:text-accent"
                 title={item.monitored ? t.watchlist.pause : t.watchlist.resume}

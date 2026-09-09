@@ -45,6 +45,12 @@ const en = {
     lastChecked: 'Checked',
     never: 'never',
     nextEpisode: 'Next',
+    scope: 'What to download',
+    scopeNew: 'Only new episodes',
+    scopeLastEp: 'Latest episode',
+    scopeLastSeason: 'Latest season',
+    scopeFirstSeason: 'First season',
+    scopeAll: 'Everything (full series)',
   },
   dashboard: {
     title: 'Automation',

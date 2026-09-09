@@ -378,6 +378,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
             backdrop: str(body.backdrop, 1000),
             imdb_id: str(body.imdb_id, 20),
             language_profile: normalizeLanguageProfile(body.language_profile),
+            backfill: body.backfill,
           })
           eventBus.emit('watchlist-updated', { action: 'add', item: result.item })
           if (result.created) {
@@ -416,12 +417,20 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
         const id = Math.trunc(Number(api.split('/')[1]))
         if (!Number.isFinite(id) || !getWatchlistItem(id)) return sendJson(res, 404, { success: false, error: 'Watchlist item not found' })
         const body = await readBody(req)
-        const patch: { monitored?: boolean; language_profile?: any; imdb_id?: string } = {}
+        const patch: { monitored?: boolean; language_profile?: any; imdb_id?: string; backfill?: any } = {}
         if (typeof body.monitored === 'boolean') patch.monitored = body.monitored
         if (body.language_profile !== undefined) patch.language_profile = normalizeLanguageProfile(body.language_profile)
+        if (body.backfill !== undefined) patch.backfill = body.backfill
         if (typeof body.imdb_id === 'string' && body.imdb_id.trim()) patch.imdb_id = body.imdb_id.trim().slice(0, 20)
         const item = updateWatchlistItem(id, patch)
         eventBus.emit('watchlist-updated', { action: 'update', item })
+        if (patch.backfill !== undefined && item) {
+          // Cambiar el alcance puede hacer "deseados" episodios ya emitidos —
+          // inténtalo ya, sin esperar al tick.
+          setTimeout(() => {
+            try { forceCheckItem(item.id) } catch (e: any) { console.error('[watchlist] scope check failed:', e.message) }
+          }, 1500)
+        }
         return sendJson(res, 200, { success: true, data: item })
       }
       if (api === 'watchlist/recent-grabs' && method === 'GET') {

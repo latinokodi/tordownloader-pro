@@ -9,7 +9,7 @@
 //    persisted across restarts. Ticks are cheap dispatchers, not blanket
 //    per-episode searches every cycle.
 //  - A target stops being wanted once grabbed or the item is removed.
-import { getSettings, updateSettings, type WatchlistItem } from './db'
+import { getSettings, updateSettings, type WatchlistItem, type BackfillScope } from './db'
 import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem } from './watchlist'
 import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, nextDelayMinutes, type MonitorAttempt } from './attempts'
 import { grab, type GrabTarget, type GrabOutcome } from './grabber'
@@ -68,21 +68,65 @@ interface DueTarget {
   tracked?: boolean
 }
 
-async function dueEpisodes(item: WatchlistItem, seasonNumber: number): Promise<DueTarget[]> {
+// Backfill scopes (Sonarr-style "what to download when I add this series").
+const MAX_TARGETS_PER_TICK = 5 // big backfills spread across ticks, politely
+const SEASON_SCAN_BUDGET = 6 // max TMDB season fetches per series per tick
+const scanCursor = new Map<number, number>() // rotation cursor for 'all' scope
+
+/**
+ * Episodes of ONE season that are wanted under the item's backfill scope.
+ * Rules (aired-only; future handled by later ticks):
+ *   new          → air_date >= item.added_at (no backfill)
+ *   last_episode → the single most recently aired episode of the current
+ *                  season, plus everything airing from the add date onward
+ *   last_season  → every aired episode of the current season
+ *   first_season → every aired episode of season 1
+ *   all          → every aired episode of every season
+ */
+async function seasonWantedEpisodes(
+  item: WatchlistItem,
+  seasonNumber: number,
+  scope: BackfillScope,
+  currentSeason: number,
+): Promise<DueTarget[]> {
   const today = todayIso()
   const addedDate = isoDateOf(item.added_at)
   const epList = await tmdbSeason(item.tmdb_id, seasonNumber)
-  const due: DueTarget[] = []
-  for (const ep of epList?.episodes || []) {
+  const episodes: any[] = epList?.episodes || []
+
+  let latestAired: string | null = null
+  if (scope === 'last_episode' && seasonNumber === currentSeason) {
+    for (const ep of episodes) {
+      const airDate = isoDateOf(ep?.air_date || '')
+      if (airDate && airDate <= today && (!latestAired || airDate > latestAired)) latestAired = airDate
+    }
+  }
+
+  const out: DueTarget[] = []
+  for (const ep of episodes) {
     const airDate = isoDateOf(ep?.air_date || '')
-    if (!airDate || airDate > today || airDate < addedDate) continue // future, unknown, or pre-add (no backfill)
+    if (!airDate || airDate > today) continue // unaired or no date
     const epNum = Number(ep?.episode_number)
     if (!epNum) continue
+    const postAdd = airDate >= addedDate
+
+    let allowed = false
+    if (scope === 'new') allowed = postAdd
+    else if (scope === 'last_episode') allowed = postAdd || airDate === latestAired
+    else if (scope === 'last_season') allowed = postAdd || seasonNumber === currentSeason
+    else if (scope === 'first_season') allowed = postAdd || seasonNumber === 1
+    else allowed = true // 'all'
+    if (!allowed) continue
+
     if (isGrabbed(item.tmdb_id, 'series', seasonNumber, epNum)) continue
-    const tracked = Boolean(getAttempt(item.tmdb_id, 'series', seasonNumber, epNum))
-    due.push({ kind: 'episode', season: seasonNumber, episode: epNum, tracked })
+    out.push({
+      kind: 'episode',
+      season: seasonNumber,
+      episode: epNum,
+      tracked: Boolean(getAttempt(item.tmdb_id, 'series', seasonNumber, epNum)),
+    })
   }
-  return due
+  return out
 }
 
 /** One grab attempt for a concrete wanted target, with backoff bookkeeping. */
@@ -208,21 +252,54 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
     return res
   }
 
-  // series: wanted = current-season fresh scan + tracked stale-season rows.
-  const seasons: any[] = (detail?.seasons || []).filter((s: any) => Number(s.season_number) > 0)
-  const airing = seasons.filter((s: any) => !s.air_date || isoDateOf(s.air_date) <= todayIso())
-  const candidates: DueTarget[] = []
-  if (airing.length > 0) {
-    const current = [...airing].sort((a, b) => Number(b.season_number) - Number(a.season_number))[0]
-    candidates.push(...(await dueEpisodes(item, Number(current.season_number))))
-  }
-  for (const a of attemptsForTitle(item.tmdb_id)) {
-    if (a.kind !== 'episode' || a.season === null || a.episode === null) continue
-    const already = candidates.some((c) => c.season === a.season && c.episode === a.episode)
-    if (!already) candidates.push({ kind: 'episode', season: a.season, episode: a.episode, tracked: true })
+  // series — wanted episodes depend on the per-title backfill scope.
+  const scope: BackfillScope = item.backfill || 'new'
+  const airedSeasons: any[] = (detail?.seasons || [])
+    .filter((s: any) => Number(s.season_number) > 0)
+    .filter((s: any) => !s.air_date || isoDateOf(s.air_date) <= todayIso())
+  const fresh: DueTarget[] = []
+
+  if (airedSeasons.length > 0) {
+    const byNumDesc = (a: any, b: any) => Number(b.season_number) - Number(a.season_number)
+    const currentNum = Number([...airedSeasons].sort(byNumDesc)[0].season_number)
+
+    // Which seasons may hold wanted episodes under this scope?
+    let seasonNumbers: number[] = [currentNum]
+    if (scope === 'first_season') {
+      seasonNumbers = Array.from(new Set([1, currentNum]))
+    } else if (scope === 'all') {
+      const allNums = airedSeasons.map((s: any) => Number(s.season_number)).sort((a, b) => b - a)
+      if (allNums.length > SEASON_SCAN_BUDGET) {
+        const cursor = scanCursor.get(item.tmdb_id) || 0
+        const window = allNums.slice(cursor, cursor + SEASON_SCAN_BUDGET)
+        if (window.length < SEASON_SCAN_BUDGET) window.push(...allNums.slice(0, SEASON_SCAN_BUDGET - window.length))
+        scanCursor.set(item.tmdb_id, (cursor + SEASON_SCAN_BUDGET) % allNums.length)
+        seasonNumbers = Array.from(new Set([currentNum, ...window]))
+      } else {
+        seasonNumbers = allNums
+      }
+    }
+    // 'new' | 'last_episode' | 'last_season' → [currentNum] only.
+
+    for (const sn of seasonNumbers) {
+      fresh.push(...(await seasonWantedEpisodes(item, sn, scope, currentNum)))
+      if (fresh.length >= MAX_TARGETS_PER_TICK) break
+    }
   }
 
-  for (const t of candidates) {
+  // Tracked rows from any season always keep their backoff retry schedule,
+  // even when the season is outside this tick's scan window.
+  for (const a of attemptsForTitle(item.tmdb_id)) {
+    if (a.kind !== 'episode' || a.season === null || a.episode === null) continue
+    const already = fresh.some((c) => c.season === a.season && c.episode === a.episode)
+    if (!already) fresh.push({ kind: 'episode', season: a.season, episode: a.episode, tracked: true })
+  }
+
+  // Newest targets first; backfills are capped per tick.
+  fresh.sort((a, b) => (b.season! - a.season!) || (b.episode! - a.episode!))
+  const targets = fresh.slice(0, MAX_TARGETS_PER_TICK)
+
+  for (const t of targets) {
     if (t.tracked) {
       const att = getAttempt(item.tmdb_id, 'series', t.season!, t.episode!)
       if (att && att.next_attempt && att.next_attempt > new Date().toISOString()) {
@@ -240,7 +317,7 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
     else if (state === 'error') res.errors += 1
     else res.waiting += 1
   }
-  // Idle series (all aired episodes already grabbed) contribute nothing.
+  // Idle series (nothing wanted under its scope) contribute nothing.
   updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
   return res
 }

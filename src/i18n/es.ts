@@ -47,6 +47,12 @@ const es: TranslationKeys = {
     lastChecked: 'Verificado',
     never: 'nunca',
     nextEpisode: 'Próximo',
+    scope: 'Qué descargar',
+    scopeNew: 'Solo capítulos nuevos',
+    scopeLastEp: 'Último episodio',
+    scopeLastSeason: 'Última temporada',
+    scopeFirstSeason: 'Primera temporada',
+    scopeAll: 'Todo (serie completa)',
   },
   dashboard: {
     title: 'Automatización',

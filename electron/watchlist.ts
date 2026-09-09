@@ -1,7 +1,7 @@
 // watchlist.ts — CRUD for the automated media watchlist (movies + series)
 // plus grab-history bookkeeping. The monitor + grabber are the only writers;
 // server.ts exposes these over HTTP.
-import { getDB, getSettings, type WatchlistItem, type GrabHistoryRow, type LanguageProfile } from './db'
+import { getDB, getSettings, type WatchlistItem, type GrabHistoryRow, type LanguageProfile, type BackfillScope } from './db'
 import { deleteAttemptsForTmdb } from './attempts'
 
 export const LANGUAGE_PROFILES: LanguageProfile[] = ['latino_first', 'latino_only', 'english_first']
@@ -12,6 +12,12 @@ export function normalizeLanguageProfile(v: unknown): LanguageProfile {
 
 export function normalizeMediaType(v: unknown): 'movie' | 'series' | null {
   return v === 'movie' || v === 'series' ? v : null
+}
+
+export const BACKFILL_SCOPES: BackfillScope[] = ['new', 'last_episode', 'last_season', 'first_season', 'all']
+
+export function normalizeBackfill(v: unknown): BackfillScope {
+  return BACKFILL_SCOPES.includes(v as BackfillScope) ? (v as BackfillScope) : 'new'
 }
 
 function rowToItem(row: any): WatchlistItem {
@@ -50,6 +56,7 @@ export interface AddWatchlistInput {
   backdrop?: string
   imdb_id?: string
   language_profile?: string
+  backfill?: string
 }
 
 export function addWatchlistItem(input: AddWatchlistInput): { item: WatchlistItem; created: boolean } {
@@ -63,9 +70,10 @@ export function addWatchlistItem(input: AddWatchlistInput): { item: WatchlistIte
   if (existing) return { item: existing, created: false }
 
   const profile = normalizeLanguageProfile(input.language_profile || getSettings().language_profile)
+  const backfill = input.media_type === 'series' ? normalizeBackfill(input.backfill) : 'new'
   const info = db.prepare(
-    `INSERT INTO watchlist (tmdb_id, media_type, title, year, overview, poster, backdrop, imdb_id, language_profile)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO watchlist (tmdb_id, media_type, title, year, overview, poster, backdrop, imdb_id, language_profile, backfill)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     tmdbId,
     mediaType,
@@ -76,12 +84,13 @@ export function addWatchlistItem(input: AddWatchlistInput): { item: WatchlistIte
     String(input.backdrop || '').slice(0, 1000),
     String(input.imdb_id || '').slice(0, 20),
     profile,
+    backfill,
   )
   const item = getWatchlistItem(Number(info.lastInsertRowid))!
   return { item, created: true }
 }
 
-const UPDATEABLE_KEYS = ['monitored', 'language_profile', 'imdb_id', 'next_episode', 'last_checked'] as const
+const UPDATEABLE_KEYS = ['monitored', 'language_profile', 'backfill', 'imdb_id', 'next_episode', 'last_checked'] as const
 
 export function updateWatchlistItem(id: number, patch: Partial<Pick<WatchlistItem, (typeof UPDATEABLE_KEYS)[number]>>): WatchlistItem | undefined {
   const db = getDB()
@@ -98,6 +107,9 @@ export function updateWatchlistItem(id: number, patch: Partial<Pick<WatchlistIte
     } else if (key === 'language_profile') {
       fields.push('language_profile = ?')
       values.push(normalizeLanguageProfile(value))
+    } else if (key === 'backfill') {
+      fields.push('backfill = ?')
+      values.push(normalizeBackfill(value))
     } else {
       fields.push(`${key} = ?`)
       values.push(value)
