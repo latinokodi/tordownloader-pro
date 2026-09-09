@@ -355,8 +355,9 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     base.error = 'Destination folder not configured (set movies/series folders in Settings)'
     return base
   }
-  // Global cap: 0 = sin límite. Solo aplica a grabs automáticos (monitor/búsqueda).
-  const maxBytes = settings.max_grab_size_gb > 0 ? settings.max_grab_size_gb * 1024 ** 3 : null
+  // Topes de tamaño por tipo: 0 = sin límite. Solo aplican a grabs automáticos.
+  const capGb = target.kind === 'movie' ? settings.max_movie_size_gb : settings.max_series_size_gb
+  const maxBytes = capGb > 0 ? capGb * 1024 ** 3 : null
 
   const phaseOrder: Array<'latino' | 'english'> =
     target.language_profile === 'latino_only' ? ['latino']
@@ -380,12 +381,12 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     else base.englishResults = results.length
     if (results.length === 0) continue
 
-    // Tope de tamaño (configurable): descarta releases gigantes; si TODAS
-    // exceden el tope, la fase se omite y se reintenta con backoff.
+    // Tope de tamaño por tipo (configurable): descarta releases gigantes; si
+    // TODAS exceden el tope, la fase se omite y se reintenta con backoff.
     if (maxBytes && results.some((r) => exceedsMaxBytes(r, maxBytes))) {
       const kept = results.filter((r) => !exceedsMaxBytes(r, maxBytes))
       if (kept.length === 0) {
-        console.log(`[grab] ${phase}: todas las releases superan el tope de ${settings.max_grab_size_gb} GB — omitidas ("${target.title}")`)
+        console.log(`[grab] ${phase}: todas las releases superan el tope de ${capGb} GB (${target.kind === 'movie' ? 'película' : 'serie'}) — omitidas ("${target.title}")`)
         continue
       }
       results = kept

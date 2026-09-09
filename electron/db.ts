@@ -46,7 +46,8 @@ export function initDB(): void {
       jackett_url VARCHAR DEFAULT '',
       jackett_api_key VARCHAR DEFAULT '',
       last_monitor_run VARCHAR DEFAULT '',
-      max_grab_size_gb INTEGER DEFAULT 0
+      max_movie_size_gb INTEGER DEFAULT 0,
+      max_series_size_gb INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS downloads (
@@ -144,6 +145,8 @@ export function initDB(): void {
     `ALTER TABLE downloads ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
     `ALTER TABLE watchlist ADD COLUMN backfill VARCHAR DEFAULT 'new'`,
     `ALTER TABLE settings ADD COLUMN max_grab_size_gb INTEGER DEFAULT 0`,
+    `ALTER TABLE settings ADD COLUMN max_movie_size_gb INTEGER DEFAULT 0`,
+    `ALTER TABLE settings ADD COLUMN max_series_size_gb INTEGER DEFAULT 0`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
@@ -182,6 +185,8 @@ export interface Settings {
   jackett_api_key: string;
   last_monitor_run: string;
   max_grab_size_gb: number;
+  max_movie_size_gb: number;
+  max_series_size_gb: number;
 }
 
 export interface Download {
@@ -247,6 +252,8 @@ export function getSettings(): Settings {
     automation_failover: row.automation_failover === undefined ? true : Boolean(row.automation_failover),
     monitor_interval_minutes: Number(row.monitor_interval_minutes || 30),
     max_grab_size_gb: Number(row.max_grab_size_gb || 0),
+    max_movie_size_gb: Number(row.max_movie_size_gb || 0),
+    max_series_size_gb: Number(row.max_series_size_gb || 0),
     language_profile: (row.language_profile as any) || 'latino_first',
     automation_service: (row.automation_service as any) || 'torbox',
   };

@@ -18,7 +18,8 @@ interface SettingsSchema {
   monitor_interval_minutes?: number
   automation_service?: string
   automation_failover?: boolean
-  max_grab_size_gb?: number
+  max_movie_size_gb?: number
+  max_series_size_gb?: number
 }
 
 interface Props {
@@ -536,15 +537,32 @@ export function SettingsModal({ onClose, showToast }: Props) {
               </div>
               <div>
                 <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.maxSizeLabel}</label>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  className="input-field w-full"
-                  placeholder="0"
-                  value={settings?.max_grab_size_gb ?? 0}
-                  onChange={(e) => setSettings((s) => s ? { ...s, max_grab_size_gb: Math.max(0, Number(e.target.value) || 0) } : null)}
-                />
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[11px] font-mono text-text-muted mb-1">{t.settings.maxMovieSize}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="input-field w-full"
+                      placeholder="0"
+                      value={settings?.max_movie_size_gb ?? 0}
+                      onChange={(e) => setSettings((s) => s ? { ...s, max_movie_size_gb: Math.max(0, Number(e.target.value) || 0) } : null)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-mono text-text-muted mb-1">{t.settings.maxSeriesSize}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="input-field w-full"
+                      placeholder="0"
+                      value={settings?.max_series_size_gb ?? 0}
+                      onChange={(e) => setSettings((s) => s ? { ...s, max_series_size_gb: Math.max(0, Number(e.target.value) || 0) } : null)}
+                    />
+                  </div>
+                </div>
                 <p className="text-xs text-text-muted mt-1">{t.settings.maxSizeHint}</p>
               </div>
             </div>

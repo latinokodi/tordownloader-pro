@@ -190,8 +190,10 @@ const en = {
     intervalLabel: 'Check interval (minutes)',
     serviceLabel: 'Automation debrid service',
     failoverLabel: 'Fail over to the other service when a grab fails',
-    maxSizeLabel: 'Max file size per download (GB)',
-    maxSizeHint: '0 = no limit. Releases larger than this are skipped and retried later.',
+    maxSizeLabel: 'Max file size (GB)',
+    maxMovieSize: 'Movies',
+    maxSeriesSize: 'Episodes / series',
+    maxSizeHint: '0 = no limit. Releases larger than the cap are skipped and retried later.',
     savedAutomation: 'Automation settings saved',
   },
   toasts: {
