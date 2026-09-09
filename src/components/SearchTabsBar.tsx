@@ -14,7 +14,7 @@ export function SearchTabsBar() {
         return (
           <div
             key={id}
-            className={`flex items-center gap-3 px-4 py-2 font-mono text-xs uppercase tracking-wide cursor-pointer transition-colors border ${isActive ? 'bg-accent text-bg-deep border-accent' : 'bg-bg-panel text-text-muted border-border hover:border-accent hover:text-text-main'}`}
+            className={`flex items-center gap-3 px-4 py-2 font-mono text-xs uppercase tracking-wide cursor-pointer transition-colors border ${isActive ? 'bg-accent text-white border-accent' : 'bg-bg-panel text-text-muted border-border hover:border-accent hover:text-text-main'}`}
             onClick={() => switchTab(id)}
           >
             <span className="truncate max-w-[150px]">{tab.query}</span>

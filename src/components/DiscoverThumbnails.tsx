@@ -28,7 +28,7 @@ export function DiscoverThumbnails({
                 ?
               </div>
             )}
-            <div className="absolute top-1 right-1 bg-accent text-bg-deep text-[10px] font-bold px-1.5 py-0.5">
+            <div className="absolute top-1 right-1 bg-accent text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
               {item.rating}
             </div>
           </div>

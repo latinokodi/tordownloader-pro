@@ -286,7 +286,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/30">
                   {profileLabel(item.language_profile)}
                 </span>
-                {item.monitored && <span className="text-[10px] font-mono text-emerald-400/90">● {t.watchlist.monitoring}</span>}
+                {item.monitored && <span className="text-[10px] font-mono text-success">● {t.watchlist.monitoring}</span>}
                 {!item.monitored && <span className="text-[10px] font-mono text-text-muted">○ {t.watchlist.paused}</span>}
               </div>
               <div className="text-[11px] text-text-muted font-mono mt-1 flex flex-wrap gap-x-4 gap-y-0.5">

@@ -114,7 +114,7 @@ const DownloadCardComponent = function DownloadCard({ download: dl, onDelete, on
             <span>{effectiveSpeed(dl)}</span>
             {dl.local_eta && <span className="text-accent">{t.downloadCard.eta} {dl.local_eta}</span>}
             {dl.service && dl.service !== 'torbox' && (
-              <span className="text-[#00a6fb] uppercase font-bold">{dl.service}</span>
+              <span className="text-accent font-bold">{dl.service}</span>
             )}
           </div>
         </div>

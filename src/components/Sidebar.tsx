@@ -17,21 +17,21 @@ export const Sidebar = memo(function Sidebar({ activeNav, onNavChange, onSetting
   return (
     <aside className="w-64 border-r border-border bg-bg-panel flex flex-col z-10">
       {/* Brand — MediaPilot */}
-      <div className="p-6 border-b border-border">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="w-8 h-8 bg-accent flex items-center justify-center text-bg-deep font-black font-mono">
-            <span className="translate-x-[0.5px] translate-y-[-0.5px]">▶</span>
+      <div className="px-5 py-5 border-b border-border">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-accent flex items-center justify-center text-white shadow-sm">
+            <span className="translate-x-[0.5px]">▶</span>
           </div>
-          <div className="leading-none">
-            <span className="font-black uppercase tracking-wider text-sm text-text-heading">Media<span className="text-accent">Pilot</span></span>
-            <div className="text-[9px] text-text-muted font-mono uppercase tracking-[0.2em] mt-1">Auto downloader</div>
+          <div className="leading-tight">
+            <span className="font-extrabold tracking-tight text-[1.05rem] text-text-heading">Media<span className="text-accent">Pilot</span></span>
+            <div className="text-[11px] text-text-muted font-medium">Auto downloader</div>
           </div>
         </div>
-        {appVersion && <span className="text-[10px] text-text-muted font-mono mt-2 block">v{appVersion}</span>}
+        {appVersion && <span className="text-[11px] text-text-muted mt-2 block">v{appVersion}</span>}
       </div>
 
       {/* Nav items */}
-      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
         <NavItem icon={<LayoutDashboard size={16} />} label={t.nav.dashboard} active={activeNav === 'dashboard'} onClick={() => onNavChange('dashboard')} />
         <NavItem icon={<Search size={16} />} label={t.nav.search} active={activeNav === 'search'} onClick={() => onNavChange('search')} />
         <NavItem icon={<Compass size={16} />} label={t.nav.discover} active={activeNav === 'discover'} onClick={() => onNavChange('discover')} />
@@ -60,18 +60,16 @@ export const Sidebar = memo(function Sidebar({ activeNav, onNavChange, onSetting
 function NavItem({ icon, label, active, onClick, badge }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void; badge?: number }) {
   return (
     <button
-      className={`w-full text-left px-4 py-3 font-mono text-sm tracking-wide uppercase transition-colors ${
-        active ? 'bg-accent/10 text-accent border-l-2 border-accent' : 'text-text-muted hover:text-text-main'
+      className={`w-full text-left px-3.5 py-2.5 rounded-lg flex items-center gap-2.5 text-[0.85rem] font-semibold transition-colors ${
+        active ? 'bg-accent-soft text-accent' : 'text-text-muted hover:text-text-heading hover:bg-white'
       }`}
       onClick={onClick}
     >
-      <div className="flex items-center gap-2">
-        {icon}
-        {label}
-        {badge !== undefined && (
-          <span className="ml-auto bg-accent text-bg-deep px-2 py-0.5 text-xs font-bold">{badge}</span>
-        )}
-      </div>
+      {icon}
+      <span className="flex-1">{label}</span>
+      {badge !== undefined && (
+        <span className="bg-accent text-white px-2 py-0.5 text-[11px] font-bold rounded-full">{badge}</span>
+      )}
     </button>
   )
 }
