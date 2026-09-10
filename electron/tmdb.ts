@@ -62,3 +62,18 @@ export async function tmdbSeason(tmdbId: number, seasonNumber: number): Promise<
   const data = await runPythonJson('tmdb-provider.py', ['season', String(tmdbId), String(seasonNumber)], { TMDB_API_KEY: key }, 30_000)
   return data && typeof data === 'object' ? data : null
 }
+
+/**
+ * Alternative titles for a title (ES/MX/US/AR/CO/CL/PE). Used by media-layout
+ * to find the folder a show ALREADY lives in when the release name is in
+ * another language (e.g. library folder from Sonarr's Spanish title vs the
+ * English release name) — never create a second folder for one show.
+ */
+export async function tmdbAltTitles(tmdbId: number, mediaType: 'tv' | 'movie' | 'series'): Promise<string[]> {
+  try {
+    const key = withKey()
+    const kind = mediaType === 'movie' ? 'movie' : 'series'
+    const data = await runPythonJson('tmdb-provider.py', ['alt_titles', String(tmdbId), kind], { TMDB_API_KEY: key }, 30_000)
+    return Array.isArray(data) ? data.filter((t) => typeof t === 'string' && t.trim()).map((t) => String(t).trim()) : []
+  } catch { return [] }
+}

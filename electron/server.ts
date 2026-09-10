@@ -17,7 +17,7 @@ import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch
 import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
 import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade } from './monitor'
-import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode } from './library'
+import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath } from './library'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -473,16 +473,28 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       if (api === 'library/delete' && method === 'POST') {
         const body = await readBody(req)
         const type = String(body.type || '')
+        const dir = typeof body.dir === 'string' ? body.dir : ''
         const title = typeof body.title === 'string' ? body.title : ''
         const season = typeof body.season === 'string' ? body.season : ''
         const file = typeof body.file === 'string' ? body.file : ''
         const forgetHistory = Boolean(body.forgetHistory)
+        const settings = getSettings()
         let result
-        if (type === 'movie') result = await deleteMovie(title, forgetHistory)
-        else if (type === 'series') result = await deleteSeries(title, forgetHistory)
-        else if (type === 'season') result = await deleteSeason(title, season, forgetHistory)
-        else if (type === 'episode') result = await deleteEpisode(title, season, file, forgetHistory)
-        else return sendJson(res, 400, { success: false, error: 'type must be movie|series|season|episode' })
+        try {
+          if (type === 'movie') {
+            result = await deleteMovie(resolveTargetPath(settings.movies_folder, { dir, title }), forgetHistory)
+          } else if (type === 'series') {
+            result = await deleteSeries(resolveTargetPath(settings.series_folder, { dir, title }), forgetHistory)
+          } else if (type === 'season') {
+            result = await deleteSeason(resolveTargetPath(settings.series_folder, { dir, title, sub: season }), forgetHistory)
+          } else if (type === 'episode') {
+            result = await deleteEpisode(resolveTargetPath(settings.series_folder, { dir, title, sub: season, file }), forgetHistory)
+          } else {
+            return sendJson(res, 400, { success: false, error: 'type must be movie|series|season|episode' })
+          }
+        } catch (e: any) {
+          return sendJson(res, 400, { success: false, error: e.message })
+        }
         if (!result.ok) return sendJson(res, 400, { success: false, error: result.error })
         return sendJson(res, 200, { success: true, data: result })
       }

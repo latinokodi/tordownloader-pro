@@ -247,6 +247,17 @@ function removeWithSidecars(filePath: string): boolean {
   } catch { return false }
 }
 
+/** Worker hook: a grab whose local download failed must not count as done. */
+export function markGrabFailed(torboxId: string, reason: string): void {
+  if (!torboxId) return
+  try {
+    const res = getDB().prepare(
+      `UPDATE grab_history SET status = 'failed', error = ? WHERE torbox_id = ? AND status = 'grabbed'`,
+    ).run(String(reason || '').slice(0, 500), torboxId)
+    if (res.changes > 0) console.warn(`[Worker] grab marcado como fallido (se reintentará): ${String(reason).slice(0, 120)}`)
+  } catch { /* ignore */ }
+}
+
 /** Delete old EN artifacts once the replacing latino download is complete locally. */
 export function finalizeReplacement(torboxId: string): void {
   const fs = require('fs') as typeof import('fs')

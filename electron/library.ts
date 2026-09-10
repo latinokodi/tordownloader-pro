@@ -63,6 +63,15 @@ export interface LibrarySnapshot {
   jellyfinConfigured: boolean
 }
 
+function humanSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = bytes
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
 function statSafe(p: string): fs.Stats | null {
   try { return fs.statSync(p) } catch { return null }
 }
@@ -216,6 +225,28 @@ function assertSafeName(name: string): string {
   return clean
 }
 
+/**
+ * Resolve the absolute path to operate on. Accepts EITHER an absolute `dir`
+ * inside the root (what the Biblioteca UI sends) OR a folder name to compose
+ * (legacy callers/tests). Every resulting path is validated inside the root.
+ */
+export function resolveTargetPath(
+  root: string,
+  opts: { dir?: string; title?: string; sub?: string; file?: string },
+): string {
+  let target = ''
+  const dir = (opts.dir || '').trim()
+  if (dir) {
+    target = assertInsideRoot(root, dir)
+  } else {
+    const title = assertSafeName(opts.title || '')
+    target = assertInsideRoot(root, path.join(root, title))
+  }
+  if (opts.sub) target = assertInsideRoot(root, path.join(target, assertSafeName(opts.sub)))
+  if (opts.file) target = assertInsideRoot(root, path.join(target, assertSafeName(opts.file)))
+  return target
+}
+
 function removeVideosWithSidecars(dir: string, fileNames: string[]): string[] {
   const removed: string[] = []
   const sidecars: string[] = []
@@ -308,14 +339,14 @@ function emptyResult(): DeleteResult {
 }
 
 /** Delete a whole movie folder (video + subs + extras). */
-export async function deleteMovie(folderName: string, forgetHistory: boolean): Promise<DeleteResult> {
+export async function deleteMovie(targetPath: string, forgetHistory: boolean): Promise<DeleteResult> {
   const out = emptyResult()
   try {
     const settings = getSettings()
-    const name = assertSafeName(folderName)
-    const target = assertInsideRoot(settings.movies_folder, path.join(settings.movies_folder, name))
+    const target = assertInsideRoot(settings.movies_folder, targetPath)
     const st = statSafe(target)
-    if (!st || !st.isDirectory()) throw new Error(`Movie folder not found: ${name}`)
+    if (!st || !st.isDirectory()) throw new Error(`Movie folder not found: ${path.basename(target)}`)
+    const name = path.basename(target)
     const { bytes, files } = dirSize(target)
     const wl = watchlistLookup(parseTitleYear(name).title, parseTitleYear(name).year)
     out.inWatchlist = wl.inWatchlist
@@ -325,7 +356,7 @@ export async function deleteMovie(folderName: string, forgetHistory: boolean): P
     if (forgetHistory && wl.watchlistId) out.forgottenRows = forgetHistoryRows(wl.watchlistId, { wholeSeries: true })
     out.jellyfin = await jellyfinRefresh()
     out.ok = true
-    console.log(`[library] película eliminada: "${name}" — ${files} archivo(s), ${(bytes / 1024 ** 3).toFixed(2)} GB liberados`)
+    console.log(`[library] película eliminada: "${name}" — ${files} archivo(s), ${humanSize(bytes)} liberados`)
   } catch (e: any) {
     out.error = e.message
     console.error(`[library] deleteMovie failed: ${e.message}`)
@@ -334,16 +365,16 @@ export async function deleteMovie(folderName: string, forgetHistory: boolean): P
 }
 
 /** Delete one season folder of a series; prunes the series folder if it empties. */
-export async function deleteSeason(seriesFolder: string, seasonDirName: string, forgetHistory: boolean): Promise<DeleteResult> {
+export async function deleteSeason(targetPath: string, forgetHistory: boolean): Promise<DeleteResult> {
   const out = emptyResult()
   try {
     const settings = getSettings()
-    const name = assertSafeName(seriesFolder)
-    const sub = assertSafeName(seasonDirName)
-    const seriesDir = assertInsideRoot(settings.series_folder, path.join(settings.series_folder, name))
-    const target = assertInsideRoot(settings.series_folder, path.join(seriesDir, sub))
+    const target = assertInsideRoot(settings.series_folder, targetPath)
     const st = statSafe(target)
-    if (!st || !st.isDirectory()) throw new Error(`Season folder not found: ${sub}`)
+    if (!st || !st.isDirectory()) throw new Error(`Season folder not found: ${path.basename(target)}`)
+    const sub = path.basename(target)
+    const seriesDir = path.dirname(target)
+    const name = path.basename(seriesDir)
     const { bytes, files } = dirSize(target)
     const seasonMatch = sub.match(SEASON_DIR_RE)
     const seasonNum = seasonMatch ? Number(seasonMatch[1]) : null
@@ -356,7 +387,7 @@ export async function deleteSeason(seriesFolder: string, seasonDirName: string, 
     if (forgetHistory && wl.watchlistId && seasonNum !== null) out.forgottenRows = forgetHistoryRows(wl.watchlistId, { season: seasonNum, episode: null })
     out.jellyfin = await jellyfinRefresh()
     out.ok = true
-    console.log(`[library] temporada eliminada: "${name}" / ${sub} — ${files} archivo(s), ${(bytes / 1024 ** 3).toFixed(2)} GB liberados`)
+    console.log(`[library] temporada eliminada: "${name}" / ${sub} — ${files} archivo(s), ${humanSize(bytes)} liberados`)
   } catch (e: any) {
     out.error = e.message
     console.error(`[library] deleteSeason failed: ${e.message}`)
@@ -365,18 +396,17 @@ export async function deleteSeason(seriesFolder: string, seasonDirName: string, 
 }
 
 /** Delete a single episode file (plus its subtitles); prunes empty folders. */
-export async function deleteEpisode(seriesFolder: string, seasonDirName: string, fileName: string, forgetHistory: boolean): Promise<DeleteResult> {
+export async function deleteEpisode(targetPath: string, forgetHistory: boolean): Promise<DeleteResult> {
   const out = emptyResult()
   try {
     const settings = getSettings()
-    const name = assertSafeName(seriesFolder)
-    const sub = assertSafeName(seasonDirName)
-    const file = assertSafeName(fileName)
-    const seriesDir = assertInsideRoot(settings.series_folder, path.join(settings.series_folder, name))
-    const seasonDir = assertInsideRoot(settings.series_folder, path.join(seriesDir, sub))
-    const target = assertInsideRoot(settings.series_folder, path.join(seasonDir, file))
+    const target = assertInsideRoot(settings.series_folder, targetPath)
     const st = statSafe(target)
-    if (!st || !st.isFile()) throw new Error(`Episode file not found: ${file}`)
+    if (!st || !st.isFile()) throw new Error(`Episode file not found: ${path.basename(target)}`)
+    const seasonDir = path.dirname(target)
+    const seriesDir = path.dirname(seasonDir)
+    const file = path.basename(target)
+    const name = path.basename(seriesDir)
     out.freedBytes = st.size
     const removed = removeVideosWithSidecars(seasonDir, [file])
     out.removedFiles.push(...removed.map((r) => r))
@@ -389,7 +419,7 @@ export async function deleteEpisode(seriesFolder: string, seasonDirName: string,
     }
     out.jellyfin = await jellyfinRefresh()
     out.ok = true
-    console.log(`[library] episodio eliminado: "${name}" / ${sub} / ${file} — ${(st.size / 1024 ** 2).toFixed(0)} MB liberados`)
+    console.log(`[library] episodio eliminado: "${name}" / ${path.basename(seasonDir)} / ${file} — ${humanSize(st.size)} liberados`)
   } catch (e: any) {
     out.error = e.message
     console.error(`[library] deleteEpisode failed: ${e.message}`)
@@ -398,14 +428,14 @@ export async function deleteEpisode(seriesFolder: string, seasonDirName: string,
 }
 
 /** Delete an entire series folder (all seasons + extras). */
-export async function deleteSeries(seriesFolder: string, forgetHistory: boolean): Promise<DeleteResult> {
+export async function deleteSeries(targetPath: string, forgetHistory: boolean): Promise<DeleteResult> {
   const out = emptyResult()
   try {
     const settings = getSettings()
-    const name = assertSafeName(seriesFolder)
-    const target = assertInsideRoot(settings.series_folder, path.join(settings.series_folder, name))
+    const target = assertInsideRoot(settings.series_folder, targetPath)
     const st = statSafe(target)
-    if (!st || !st.isDirectory()) throw new Error(`Series folder not found: ${name}`)
+    if (!st || !st.isDirectory()) throw new Error(`Series folder not found: ${path.basename(target)}`)
+    const name = path.basename(target)
     const { bytes, files } = dirSize(target)
     const wl = watchlistLookup(parseTitleYear(name).title, parseTitleYear(name).year)
     out.inWatchlist = wl.inWatchlist
@@ -415,7 +445,7 @@ export async function deleteSeries(seriesFolder: string, forgetHistory: boolean)
     if (forgetHistory && wl.watchlistId) out.forgottenRows = forgetHistoryRows(wl.watchlistId, { wholeSeries: true })
     out.jellyfin = await jellyfinRefresh()
     out.ok = true
-    console.log(`[library] serie eliminada: "${name}" — ${files} archivo(s), ${(bytes / 1024 ** 3).toFixed(2)} GB liberados`)
+    console.log(`[library] serie eliminada: "${name}" — ${files} archivo(s), ${humanSize(bytes)} liberados`)
   } catch (e: any) {
     out.error = e.message
     console.error(`[library] deleteSeries failed: ${e.message}`)

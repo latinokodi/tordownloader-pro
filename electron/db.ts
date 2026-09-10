@@ -155,6 +155,13 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN max_series_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE grab_history ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
     `ALTER TABLE grab_history ADD COLUMN file_name VARCHAR DEFAULT ''`,
+    `CREATE TABLE IF NOT EXISTS media_folders (
+       tmdb_id INTEGER NOT NULL,
+       media_type TEXT NOT NULL,
+       folder TEXT NOT NULL,
+       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY (tmdb_id, media_type)
+     )`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
@@ -252,6 +259,24 @@ export interface GrabHistoryRow {
   dest_folder: string;
   file_name: string;
   grabbed_at: string;
+}
+
+/** Carpeta de biblioteca elegida para un título (evita duplicados por cambio de título). */
+export function getMediaFolder(tmdbId: number, mediaType: string): string {
+  try {
+    const row = db.prepare('SELECT folder FROM media_folders WHERE tmdb_id = ? AND media_type = ?').get(tmdbId, mediaType) as any
+    return row?.folder || ''
+  } catch { return '' }
+}
+
+export function setMediaFolder(tmdbId: number, mediaType: string, folder: string): void {
+  if (!tmdbId || !folder) return
+  try {
+    db.prepare(
+      `INSERT INTO media_folders (tmdb_id, media_type, folder, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(tmdb_id, media_type) DO UPDATE SET folder = excluded.folder, updated_at = CURRENT_TIMESTAMP`,
+    ).run(tmdbId, mediaType, folder)
+  } catch { /* table may not exist on very old DBs */ }
 }
 
 export function getSettings(): Settings {

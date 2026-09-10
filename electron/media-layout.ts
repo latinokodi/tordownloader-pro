@@ -6,6 +6,8 @@
 import fs from 'fs'
 import path from 'path'
 import https from 'https'
+import { getMediaFolder, setMediaFolder } from './db'
+import { tmdbAltTitles } from './tmdb'
 
 export interface ParsedRelease {
   title: string
@@ -110,7 +112,7 @@ export async function tmdbResolve(
   parsed: ParsedRelease,
   type: 'movie' | 'series',
   apiKey: string,
-): Promise<{ title: string; year?: number } | null> {
+): Promise<{ title: string; original?: string; id?: number; year?: number } | null> {
   if (!apiKey) return null
   const kind = type === 'movie' ? 'movie' : 'tv'
   const q = encodeURIComponent(parsed.title)
@@ -120,8 +122,80 @@ export async function tmdbResolve(
   if (!data || !Array.isArray(data.results) || data.results.length === 0) return null
   const first = data.results[0]
   const title = first.title || first.name || parsed.title
+  const original = first.original_title || first.original_name || undefined
   const year = first.release_date || first.first_air_date
-  return { title, year: year ? parseInt(String(year).slice(0, 4), 10) || undefined : undefined }
+  return {
+    title,
+    original,
+    id: Number(first.id) || undefined,
+    year: year ? parseInt(String(year).slice(0, 4), 10) || undefined : undefined,
+  }
+}
+
+/** Normaliza un nombre para comparar carpetas (acentos, mayúsculas y puntuación). */
+function normalizeName(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+}
+
+/**
+ * Busca una carpeta de título existente que corresponda a cualquiera de los
+ * candidatos: coincidencia exacta (case-insensitive) con "Título (Año)" o
+ * "Título", y si no, coincidencia NORMALIZADA (ignora acentos/puntuación, así
+ * "Star Trek: Strange New Worlds" == "Star Trek_ Strange New Worlds").
+ * Nunca crea una carpeta nueva si el título ya vive en la biblioteca.
+ */
+function findExistingTitleFolder(root: string, candidates: string[], year?: number): string | null {
+  let dirs: string[] = []
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+  } catch { return null }
+  const uniq = [...new Set(candidates.map((c) => c.trim()).filter(Boolean))]
+  for (const c of uniq) {
+    for (const name of year ? [`${c} (${year})`, c] : [c]) {
+      const t = safeSegment(name).toLowerCase()
+      const hit = dirs.find((d) => d.toLowerCase() === t)
+      if (hit) return hit
+    }
+  }
+  const norms = new Set<string>()
+  for (const c of uniq) {
+    norms.add(normalizeName(c))
+    if (year) norms.add(normalizeName(`${c} (${year})`))
+  }
+  const hit2 = dirs.find((d) => norms.has(normalizeName(d)))
+  return hit2 || null
+}
+
+/** Reutiliza la carpeta de temporada existente (Season 4 == Season 04). */
+export function resolveSeasonFolder(seriesDir: string, season: number): string {
+  let dirs: string[] = []
+  try {
+    dirs = fs.readdirSync(seriesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+  } catch { return `Season ${season}` }
+  const parseNum = (name: string): number | null => {
+    const m = name.match(/^(?:season|temporada|t)\s*0*(\d{1,3})$/i)
+    return m ? Number(m[1]) : null
+  }
+  const same = dirs.find((d) => parseNum(d) === season)
+  if (same) return same
+  if (dirs.length === 0) return `Season ${season}`
+  // Mimic the padding style already used by this show's other seasons.
+  const padded = dirs.find((d) => /^(?:season|temporada)\s+0\d/i.test(d))
+  if (padded) {
+    const word = padded.replace(/\s*0?\d+$/i, '').trim()
+    return `${word} ${String(season).padStart(2, '0')}`
+  }
+  const unpadded = dirs.find((d) => /^(?:season|temporada)\s+\d/i.test(d))
+  const word = unpadded ? unpadded.replace(/\s*\d+$/i, '').trim() : 'Season'
+  return `${word} ${season}`
 }
 
 /**
@@ -154,19 +228,20 @@ export async function computeDestination(
   settings: { destination_folder: string; movies_folder: string; series_folder: string; tmdb_api_key: string },
   torrentName: string,
   type: 'movie' | 'series' | '',
+  opts: { tmdbId?: number; extraTitles?: string[]; titleOverride?: string } = {},
 ): Promise<{ root: string; folder: string; season: number | undefined }> {
   const kind = type === 'series' ? 'series' : 'movie'
   const parsed = parseReleaseName(torrentName)
 
-  let meta: { title: string; year?: number } | null = null
+  let meta: { title: string; original?: string; id?: number; year?: number } | null = null
   try {
     meta = await tmdbResolve(parsed, kind, settings.tmdb_api_key)
   } catch {
     meta = null
   }
 
-  const title = meta?.title || parsed.title
   const year = meta?.year || parsed.year
+  const tmdbId = opts.tmdbId || meta?.id
 
   const root =
     kind === 'series'
@@ -177,15 +252,51 @@ export async function computeDestination(
     throw new Error('No destination folder configured (set movies/series folders in Settings)')
   }
 
-  // Land in the existing folder when one already exists in a different casing.
-  const titleFolder = reuseExistingSegment(root, year ? `${title} (${year})` : title)
+  const saved = tmdbId ? getMediaFolder(tmdbId, kind) : ''
 
+  // 1) Carpeta ya memorizada para este título → reutilizarla tal cual.
+  if (saved) {
+    const hit = findExistingTitleFolder(root, [saved])
+    if (hit) return finish(root, hit, kind, parsed, tmdbId, saved)
+  }
+
+  // 2) Candidatos: título localizado (es-ES), título original, títulos extra
+  //    que vengan del caller (release/watchers) y, si hace falta, títulos
+  //    alternativos de TMDB (ES/MX/US…). Nunca crear carpeta nueva si ya vive.
+  const candidates = [
+    ...(opts.titleOverride ? [opts.titleOverride] : []),
+    ...(opts.extraTitles || []),
+    meta?.title,
+    meta?.original,
+    parsed.title,
+  ].filter(Boolean) as string[]
+
+  let titleFolder = findExistingTitleFolder(root, candidates, year)
+  if (!titleFolder && tmdbId) {
+    const alts = await tmdbAltTitles(tmdbId, kind)
+    if (alts.length) titleFolder = findExistingTitleFolder(root, alts, year)
+  }
+  if (!titleFolder) {
+    const base = candidates[0] || parsed.title || torrentName
+    titleFolder = safeSegment(year ? `${base} (${year})` : base)
+  }
+  return finish(root, titleFolder, kind, parsed, tmdbId, saved ? undefined : titleFolder)
+}
+
+/** Resuelve la temporada y memoriza la carpeta elegida para el título. */
+function finish(
+  root: string,
+  titleFolder: string,
+  kind: 'movie' | 'series',
+  parsed: ParsedRelease,
+  tmdbId: number | undefined,
+  remember?: string,
+): { root: string; folder: string; season: number | undefined } {
+  if (tmdbId && remember) setMediaFolder(tmdbId, kind, remember)
   if (kind === 'series') {
     const season = parsed.season ?? 1
-    const seasonFolder = reuseExistingSegment(
-      path.join(root, safeSegment(titleFolder)),
-      `Season ${String(season).padStart(2, '0')}`,
-    )
+    const seriesDir = path.join(root, safeSegment(titleFolder))
+    const seasonFolder = resolveSeasonFolder(seriesDir, season)
     return { root, folder: `${titleFolder}/${seasonFolder}`, season }
   }
   return { root, folder: titleFolder, season: undefined }

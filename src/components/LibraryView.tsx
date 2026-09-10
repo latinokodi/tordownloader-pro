@@ -46,6 +46,7 @@ interface LibSnapshot {
 interface PendingDelete {
   type: 'movie' | 'series' | 'season' | 'episode'
   title: string
+  dir: string
   season?: string
   file?: string
   label: string
@@ -119,6 +120,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
     try {
       const res = await http<any>('/api/library/delete', 'POST', {
         type: pending.type,
+        dir: pending.dir,
         title: pending.title,
         season: pending.season,
         file: pending.file,
@@ -210,7 +212,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
                   <button
                     className="w-7 h-7 rounded-full border border-border text-text-muted flex items-center justify-center hover:bg-danger hover:text-white hover:border-danger transition-colors"
                     title={t.library.deleteMovie}
-                    onClick={() => askDelete({ type: 'movie', title: m.title, label: `${m.title} (${m.year || '—'})`, sizeBytes: m.sizeBytes, files: m.videos, inWatchlist: m.inWatchlist })}
+                    onClick={() => askDelete({ type: 'movie', dir: m.dir, title: m.title, label: `${m.title} (${m.year || '—'})`, sizeBytes: m.sizeBytes, files: m.videos, inWatchlist: m.inWatchlist })}
                   >
                     <Trash2 size={13} />
                   </button>
@@ -239,7 +241,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
                     <button
                       className="w-7 h-7 rounded-full border border-border text-text-muted flex items-center justify-center hover:bg-danger hover:text-white hover:border-danger transition-colors shrink-0"
                       title={t.library.deleteSeries}
-                      onClick={() => askDelete({ type: 'series', title: s.title, label: `${s.title} (${t.library.fullSeries})`, sizeBytes: s.sizeBytes, files: s.seasons.reduce((a, x) => a + x.episodes.length + x.otherFiles, 0), inWatchlist: s.inWatchlist })}
+                      onClick={() => askDelete({ type: 'series', dir: s.dir, title: s.title, label: `${s.title} (${t.library.fullSeries})`, sizeBytes: s.sizeBytes, files: s.seasons.reduce((a, x) => a + x.episodes.length + x.otherFiles, 0), inWatchlist: s.inWatchlist })}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -261,7 +263,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
                             </div>
                             <button
                               className="btn border border-border text-[11px] px-2 py-0.5 hover:border-danger hover:text-danger"
-                              onClick={() => askDelete({ type: 'season', title: s.title, season: sea.label, label: `${s.title} — ${sea.label}`, sizeBytes: sea.sizeBytes, files: sea.episodes.length + sea.otherFiles, inWatchlist: s.inWatchlist })}
+                              onClick={() => askDelete({ type: 'season', dir: s.dir, title: s.title, season: sea.label, label: `${s.title} — ${sea.label}`, sizeBytes: sea.sizeBytes, files: sea.episodes.length + sea.otherFiles, inWatchlist: s.inWatchlist })}
                             >
                               {t.library.deleteSeason}
                             </button>
@@ -277,7 +279,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
                                 <button
                                   className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-text-muted hover:bg-danger hover:text-white transition-colors"
                                   title={t.library.deleteEpisode}
-                                  onClick={() => askDelete({ type: 'episode', title: s.title, season: sea.label, file: ep.file, label: ep.file, sizeBytes: ep.sizeBytes, files: 1, inWatchlist: s.inWatchlist })}
+                                  onClick={() => askDelete({ type: 'episode', dir: s.dir, title: s.title, season: sea.label, file: ep.file, label: ep.file, sizeBytes: ep.sizeBytes, files: 1, inWatchlist: s.inWatchlist })}
                                 >
                                   <Trash2 size={12} />
                                 </button>

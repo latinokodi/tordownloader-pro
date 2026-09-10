@@ -172,6 +172,20 @@ def cmd_search(query):
     return results
 
 
+def cmd_alt_titles(tmdb_id, media_type):
+    kind = 'tv' if media_type in ('tv', 'series') else 'movie'
+    data = tmdb_get(f'/{kind}/{tmdb_id}/alternative_titles', {})
+    raw = data.get('titles') or data.get('results') or []
+    titles, seen = [], set()
+    for item in raw:
+        title = (item.get('title') or '').strip()
+        iso = (item.get('iso_3166_1') or '').upper()
+        if title and title not in seen and (not iso or iso in ('ES', 'MX', 'US', 'AR', 'CO', 'CL', 'PE')):
+            seen.add(title)
+            titles.append(title)
+    return titles
+
+
 def main():
     if not TMDB_KEY:
         print(json.dumps({'error': 'TMDB_API_KEY not set'}))
@@ -192,6 +206,8 @@ def main():
             result = cmd_season(args[1], args[2])
         elif cmd == 'search' and len(args) >= 2:
             result = cmd_search(args[1])
+        elif cmd == 'alt_titles' and len(args) >= 3:
+            result = cmd_alt_titles(args[1], args[2])
         else:
             print(json.dumps({'error': f'Unknown command: {cmd}'}))
             sys.exit(1)

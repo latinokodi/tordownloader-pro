@@ -352,7 +352,10 @@ async function computeDestFolder(settings: Settings, target: GrabTarget): Promis
       releaseName = `${target.title} (${target.year})`
     }
     const type: 'movie' | 'series' = target.kind === 'movie' ? 'movie' : 'series'
-    const { root, folder } = await computeDestination(settings, releaseName, type)
+    const { root, folder } = await computeDestination(settings, releaseName, type, {
+      tmdbId: target.tmdb_id,
+      extraTitles: [target.title, target.original_title].filter(Boolean) as string[],
+    })
     if (!root) return null
     return path.join(root, ...folder.split('/').map(safeSegment))
   } catch (e: any) {

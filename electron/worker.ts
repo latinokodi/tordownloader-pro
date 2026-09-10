@@ -1,7 +1,7 @@
 import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
-import { appendDownloadedFile, finalizeReplacement } from './watchlist';
+import { appendDownloadedFile, finalizeReplacement, markGrabFailed } from './watchlist';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
@@ -327,6 +327,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
 
     const totalBytes = files.reduce((acc: number, f: any) => acc + getFileSize(f), 0);
     let completedBytes = 0;
+    let videosDownloaded = 0;
 
     for (let idx = 0; idx < files.length; idx++) {
       const fileInfo = files[idx];
@@ -402,6 +403,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
         throw new Error(`Failed to download ${fileName}: ${result.error}`);
       }
       console.log(`[Worker] TB ✓ ${fileName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
+      if (isVideo) videosDownloaded += 1
       appendDownloadedFile(tid, filePath)
 
       if (expectedSize > 0) {
@@ -412,6 +414,12 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
       }
 
       completedBytes += expectedSize || result.bytes_downloaded;
+    }
+
+    // Un torrent sin ningún archivo de video (p. ej. solo .zipx/.rar) NO es una
+    // descarga válida: marcarla como completada perdía el episodio en silencio.
+    if (videosDownloaded === 0) {
+      throw new Error('El torrent no contiene ningún archivo de video (¿empaquetado en .zipx/.rar?) — se reintentará')
     }
 
     updateDownload(tid, {
@@ -432,6 +440,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
       local_status: `failed: ${err.message}`,
       local_speed: 0,
     });
+    markGrabFailed(tid, err.message)
   } finally {
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
@@ -646,6 +655,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
       local_status: `failed: ${err.message}`,
       local_speed: 0,
     });
+    markGrabFailed(tid, err.message)
   } finally {
     activeLocalDownloads.delete(tid);
     activeDownloaders.delete(tid);
