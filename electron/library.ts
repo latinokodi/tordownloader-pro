@@ -55,12 +55,96 @@ export interface LibraryMovie {
   videos: number
   inWatchlist: boolean
   watchlistId: number | null
+  poster: string
 }
 export interface LibrarySnapshot {
   movies: LibraryMovie[]
   series: LibrarySeries[]
   roots: { movies: string; series: string }
   jellyfinConfigured: boolean
+  posters: boolean
+}
+
+// ── Jellyfin index (para pósters) ─────────────────────────
+interface JellyfinItem {
+  Id: string
+  Name: string
+  Type: string
+  ImageTags?: Record<string, string>
+}
+
+let jfIndexCache: { at: number; map: Map<string, JellyfinItem> } | null = null
+const JF_INDEX_TTL_MS = 10 * 60 * 1000
+
+function jfKey(type: string, folderName: string): string {
+  const kind = type === 'Series' ? 'series' : 'movie'
+  return `${kind}:${folderName.toLowerCase()}`
+}
+
+/** Índice de items de Jellyfin (id + tag de póster) por nombre de carpeta. */
+async function jellyfinIndex(): Promise<Map<string, JellyfinItem>> {
+  const settings = getSettings()
+  const url = (settings.jellyfin_url || '').trim().replace(/\/+$/, '')
+  const key = (settings.jellyfin_api_key || '').trim()
+  if (!url || !key) return new Map()
+  if (jfIndexCache && Date.now() - jfIndexCache.at < JF_INDEX_TTL_MS) return jfIndexCache.map
+  const map = new Map<string, JellyfinItem>()
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 8_000)
+    const res = await fetch(
+      `${url}/Items?Recursive=true&IncludeItemTypes=Movie,Series&Fields=Path&api_key=${encodeURIComponent(key)}`,
+      { signal: ctrl.signal },
+    )
+    clearTimeout(timer)
+    if (res.ok) {
+      const body: any = await res.json().catch(() => null)
+      for (const item of body?.Items || []) {
+        if (!item?.Id) continue
+        const raw = String(item.Path || '').replace(/[/\\]+$/, '')
+        const parts = raw.split(/[/\\]/).filter(Boolean)
+        const base = parts[parts.length - 1] || ''
+        const parent = parts[parts.length - 2] || ''
+        // Movies: Jellyfin's Path points at the FILE → the folder is the parent.
+        // Series: Path points at the show folder (its basename).
+        const isSeries = String(item.Type || '') === 'Series'
+        const candidates = isSeries ? [base, parent] : [parent, base]
+        for (const name of candidates) {
+          if (name && !name.includes('.')) map.set(jfKey(String(item.Type || ''), name), item as JellyfinItem)
+        }
+      }
+      console.log(`[library] índice Jellyfin: ${map.size} items (pósters disponibles)`)
+    } else {
+      console.warn(`[library] Jellyfin index HTTP ${res.status} — sin pósters`)
+    }
+  } catch (e: any) {
+    console.warn(`[library] Jellyfin index failed: ${e.message} — sin pósters`)
+  }
+  jfIndexCache = { at: Date.now(), map }
+  return map
+}
+
+/** Póster (bytes) de un item de la biblioteca, proxied para no exponer la key. */
+export async function fetchJellyfinPoster(folderName: string, kind: 'movie' | 'series'): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const settings = getSettings()
+  const url = (settings.jellyfin_url || '').trim().replace(/\/+$/, '')
+  const key = (settings.jellyfin_api_key || '').trim()
+  if (!url || !key) return null
+  const map = await jellyfinIndex()
+  const item = map.get(jfKey(kind === 'series' ? 'Series' : 'Movie', path.basename(folderName)))
+  if (!item || !item.ImageTags?.Primary) return null
+  try {
+    const res = await fetch(`${url}/Items/${item.Id}/Images/Primary?maxHeight=450&quality=90&tag=${encodeURIComponent(item.ImageTags.Primary)}&api_key=${encodeURIComponent(key)}`)
+    if (!res.ok) return null
+    const buffer = Buffer.from(await res.arrayBuffer())
+    return { buffer, contentType: res.headers.get('content-type') || 'image/jpeg' }
+  } catch { return null }
+}
+
+export function posterUrlFor(kind: 'movie' | 'series', folderName: string, hasPoster: boolean): string {
+  if (!hasPoster) return ''
+  const f = encodeURIComponent(path.basename(folderName))
+  return `/api/library/poster?t=${kind}&f=${f}`
 }
 
 function humanSize(bytes: number): string {
@@ -126,8 +210,9 @@ function watchlistLookup(title: string, year: string): { inWatchlist: boolean; w
   return { inWatchlist: false, watchlistId: null }
 }
 
-export function scanLibrary(): LibrarySnapshot {
+export async function scanLibrary(): Promise<LibrarySnapshot> {
   const settings = getSettings()
+  const postering = await jellyfinIndex()
   const roots = {
     movies: (settings.movies_folder || '').trim(),
     series: (settings.series_folder || '').trim(),
@@ -144,7 +229,8 @@ export function scanLibrary(): LibrarySnapshot {
       for (const f of fs.readdirSync(dir)) if (VIDEO_RE.test(f)) videos += 1
       const { title, year } = parseTitleYear(entry.name)
       const wl = watchlistLookup(title, year)
-      movies.push({ title, year, dir, sizeBytes: bytes, videos, ...wl })
+      const hasPoster = Boolean(postering.get(jfKey('Movie', entry.name))?.ImageTags?.Primary)
+      movies.push({ title, year, dir, sizeBytes: bytes, videos, poster: posterUrlFor('movie', entry.name, hasPoster), ...wl })
     }
     movies.sort((a, b) => a.title.localeCompare(b.title, 'es'))
   }
@@ -201,6 +287,7 @@ export function scanLibrary(): LibrarySnapshot {
     series,
     roots,
     jellyfinConfigured: Boolean((settings.jellyfin_url || '').trim() && (settings.jellyfin_api_key || '').trim()),
+    posters: postering.size > 0,
   }
 }
 

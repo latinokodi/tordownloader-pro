@@ -17,7 +17,7 @@ import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch
 import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
 import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade } from './monitor'
-import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath } from './library'
+import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath, fetchJellyfinPoster } from './library'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -468,7 +468,20 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
 
       // ── Biblioteca (listado + borrado fiable) ─────────────
       if (api === 'library' && method === 'GET') {
-        return sendJson(res, 200, { success: true, data: scanLibrary() })
+        return sendJson(res, 200, { success: true, data: await scanLibrary() })
+      }
+      if (api === 'library/poster' && method === 'GET') {
+        const q = new URL(req.url || '', 'http://localhost').searchParams
+        const folder = q.get('f') || ''
+        const kind = q.get('t') === 'series' ? 'series' : 'movie'
+        if (!folder) return sendJson(res, 400, { success: false, error: 'f required' })
+        const poster = await fetchJellyfinPoster(folder, kind)
+        if (!poster) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' })
+          return res.end('no poster')
+        }
+        res.writeHead(200, { 'Content-Type': poster.contentType, 'Cache-Control': 'public, max-age=86400' })
+        return res.end(poster.buffer)
       }
       if (api === 'library/delete' && method === 'POST') {
         const body = await readBody(req)

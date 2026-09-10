@@ -35,12 +35,14 @@ interface LibMovie {
   videos: number
   inWatchlist: boolean
   watchlistId: number | null
+  poster: string
 }
 interface LibSnapshot {
   movies: LibMovie[]
   series: LibSeries[]
   roots: { movies: string; series: string }
   jellyfinConfigured: boolean
+  posters: boolean
 }
 
 interface PendingDelete {
@@ -195,27 +197,51 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
       {/* Contenido */}
       <div className="flex-1 overflow-auto pr-1">
         {tab === 'movies' ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-7 gap-4">
             {movies.length === 0 && <div className="col-span-full text-text-muted text-sm py-8 text-center">{t.library.emptyMovies}</div>}
             {movies.map((m) => (
-              <div key={m.dir} className="group relative rounded-xl border border-border bg-bg-card p-3 flex flex-col gap-2 hover:border-accent/60 transition-colors">
-                <div className="text-[13px] font-semibold text-text-heading leading-snug line-clamp-2 min-h-[2.4em]" title={m.title}>
-                  {m.title}
+              <div
+                key={m.dir}
+                className="group relative flex flex-col overflow-hidden rounded-xl border border-border bg-bg-card hover:border-accent/60 transition-colors"
+              >
+                {/* Póster */}
+                <div className="relative aspect-[2/3] bg-bg-input overflow-hidden">
+                  <div className="absolute inset-0 flex items-center justify-center text-text-muted">
+                    <Film size={34} strokeWidth={1.4} />
+                  </div>
+                  {m.poster && (
+                    <img
+                      src={m.poster}
+                      alt={m.title}
+                      className="relative w-full h-full object-cover"
+                      loading="lazy"
+                      onError={(e) => { e.currentTarget.style.display = 'none' }}
+                    />
+                  )}
+                  {m.inWatchlist && (
+                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-bg-deep/85 text-success backdrop-blur-sm">
+                      {t.library.inWatchlist}
+                    </span>
+                  )}
+                  {/* Hover action: borrar */}
+                  <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <button
+                      className="w-10 h-10 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
+                      title={t.library.deleteMovie}
+                      onClick={() => askDelete({ type: 'movie', dir: m.dir, title: m.title, label: `${m.title} (${m.year || '—'})`, sizeBytes: m.sizeBytes, files: m.videos, inWatchlist: m.inWatchlist })}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
-                <div className="text-[11px] text-text-muted">
-                  {m.year || '—'} · {m.videos} {t.library.files} · {fmtBytes(m.sizeBytes)}
-                </div>
-                <div className="flex items-center justify-between mt-auto pt-1">
-                  {m.inWatchlist ? (
-                    <span className="text-[10px] uppercase tracking-wide text-success font-bold">{t.library.inWatchlist}</span>
-                  ) : <span />}
-                  <button
-                    className="w-7 h-7 rounded-full border border-border text-text-muted flex items-center justify-center hover:bg-danger hover:text-white hover:border-danger transition-colors"
-                    title={t.library.deleteMovie}
-                    onClick={() => askDelete({ type: 'movie', dir: m.dir, title: m.title, label: `${m.title} (${m.year || '—'})`, sizeBytes: m.sizeBytes, files: m.videos, inWatchlist: m.inWatchlist })}
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                {/* Datos */}
+                <div className="p-2.5 flex flex-col gap-0.5">
+                  <div className="text-[13px] font-semibold text-text-heading leading-snug line-clamp-2 min-h-[2.6em]" title={m.title}>
+                    {m.title}
+                  </div>
+                  <div className="text-[11px] text-text-muted truncate">
+                    {m.year || '—'} · {m.videos} {t.library.files} · {fmtBytes(m.sizeBytes)}
+                  </div>
                 </div>
               </div>
             ))}
