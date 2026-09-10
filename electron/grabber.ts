@@ -4,7 +4,7 @@
 // the winner to the debrid service and snapshot the exact destination folder
 // on the download row so the worker routes it without re-parsing.
 import path from 'path'
-import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, type Settings, type DebridService, type LanguageProfile } from './db'
+import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, type Settings, type DebridService, type LanguageProfile } from './db'
 import { recordGrab } from './watchlist'
 import { runPythonLines, setupSearchEnv } from './python-run'
 import { computeDestination, safeSegment } from './media-layout'
@@ -427,6 +427,24 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     } catch (e: any) {
       console.error(`[grab] ${phase} search error for "${target.title}": ${e.message}`)
       continue
+    }
+    // Lista negra: releases ya descartados (p. ej. el episodio de OTRA serie con
+    // el mismo título, detectado por duración al descargar). Compara por hash
+    // y, si no hay hash, por título normalizado del release.
+    const badHashes = getBadReleaseHashes()
+    const badTitles = getBadReleaseTitles()
+    if (results.length > 0 && (badHashes.size > 0 || badTitles.size > 0)) {
+      const before = results.length
+      results = results.filter((r) => {
+        const hash = String(r.info_hash || '').toLowerCase()
+        if (hash && badHashes.has(hash)) return false
+        const norm = normalizeReleaseTitle(String(r.title || ''))
+        if (norm && badTitles.has(norm)) return false
+        return true
+      })
+      if (results.length !== before) {
+        console.log(`[grab] ${phase}: ${before - results.length} resultado(s) descartados por lista negra`)
+      }
     }
     if (phase === 'latino') base.latinoResults = results.length
     else base.englishResults = results.length

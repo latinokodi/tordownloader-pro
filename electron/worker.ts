@@ -1,7 +1,10 @@
 import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
-import { appendDownloadedFile, finalizeReplacement, markGrabFailed } from './watchlist';
+import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId } from './watchlist';
+import { tmdbSeason } from './tmdb';
+import { addBadRelease } from './db';
+import { execFile } from 'child_process';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
@@ -65,6 +68,72 @@ function fmtBytes(bytes: number): string {
   let v = bytes
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
   return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+/** Duración real del archivo (segundos) vía ffprobe; null si no se puede medir. */
+function probeDurationSeconds(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { timeout: 20_000 }, (err, stdout) => {
+      if (err) return resolve(null)
+      const seconds = parseFloat(String(stdout).trim())
+      resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : null)
+    })
+  })
+}
+
+/**
+ * Un release puede ser de OTRA serie con el mismo nombre (p. ej. "Dark Matter"
+ * 2015 vs 2024) o estar mal etiquetado. Si la duración del archivo no cuadra
+ * con la del episodio en TMDB, se borra, se marca el grab como fallido (para
+ * que el monitor reintente) y el release entra en la lista negra.
+ * Devuelve el mensaje de error si hay que abortar la descarga, o null si OK.
+ */
+export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[]): Promise<string | null> {
+  if (videoPaths.length === 0) return null
+  const row = getGrabByTorboxId(torboxId)
+  if (!row || row.kind !== 'episode' || !row.season || !row.episode || !row.tmdb_id) return null
+  let expectedMinutes: number | null = null
+  try {
+    const season = await tmdbSeason(row.tmdb_id, row.season)
+    const ep = season?.episodes?.find((e: any) => Number(e.episode_number) === Number(row.episode))
+    expectedMinutes = ep?.runtime ? Number(ep.runtime) : null
+  } catch { /* sin datos: no se puede verificar */ }
+  if (!expectedMinutes) return null
+
+  // Verifica el archivo más grande (el episodio real; ignora samples/extras).
+  let main = videoPaths[0]
+  let mainSize = 0
+  for (const p of videoPaths) {
+    try { const st = fs.statSync(p); if (st.size > mainSize) { mainSize = st.size; main = p } } catch { /* ignore */ }
+  }
+  const actual = await probeDurationSeconds(main)
+  if (!actual) return null
+  const expectedSeconds = expectedMinutes * 60
+  const tolerance = Math.max(300, expectedSeconds * 0.15)
+  const delta = Math.abs(actual - expectedSeconds)
+  if (delta <= tolerance) {
+    console.log(`[Worker] verificado: ${path.basename(main)} dura ${Math.round(actual / 60)} min (TMDB ${expectedMinutes} min)`)
+    return null
+  }
+  const reason = `Duración no coincide: ${Math.round(actual / 60)} min vs ${expectedMinutes} min esperados (¿episodio de otra serie?)`
+  console.warn(`[Worker] ✗ ${path.basename(main)}: ${reason}`)
+  // Borra el archivo equivocado (y sus subtítulos) para no dejar basura.
+  try {
+    for (const p of videoPaths) {
+      try { fs.rmSync(p, { force: true }) } catch { /* ignore */ }
+      const stem = p.replace(/\.[^./\\]+$/, '')
+      const dir = path.dirname(p)
+      try {
+        for (const entry of fs.readdirSync(dir)) {
+          if (/\.(srt|vtt|ass|ssa|sub)$/i.test(entry) && entry.startsWith(path.basename(stem) + '.')) {
+            try { fs.rmSync(path.join(dir, entry), { force: true }) } catch { /* ignore */ }
+          }
+        }
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  if (row.info_hash || row.title) addBadRelease(row.info_hash || '', reason, row.title || '')
+  return reason
 }
 
 function safeMkdirSync(dirPath: string) {
@@ -328,6 +397,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
     const totalBytes = files.reduce((acc: number, f: any) => acc + getFileSize(f), 0);
     let completedBytes = 0;
     let videosDownloaded = 0;
+    const downloadedVideoPaths: string[] = [];
 
     for (let idx = 0; idx < files.length; idx++) {
       const fileInfo = files[idx];
@@ -403,7 +473,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
         throw new Error(`Failed to download ${fileName}: ${result.error}`);
       }
       console.log(`[Worker] TB ✓ ${fileName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
-      if (isVideo) videosDownloaded += 1
+      if (isVideo) { videosDownloaded += 1; downloadedVideoPaths.push(filePath) }
       appendDownloadedFile(tid, filePath)
 
       if (expectedSize > 0) {
@@ -419,8 +489,14 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
     // Un torrent sin ningún archivo de video (p. ej. solo .zipx/.rar) NO es una
     // descarga válida: marcarla como completada perdía el episodio en silencio.
     if (videosDownloaded === 0) {
+      const row = getGrabByTorboxId(tid)
+      if (row && (row.info_hash || row.title)) addBadRelease(row.info_hash || '', 'torrent sin archivo de video', row.title || '')
       throw new Error('El torrent no contiene ningún archivo de video (¿empaquetado en .zipx/.rar?) — se reintentará')
     }
+
+    // ¿Es realmente el episodio pedido? (evita releases de otra serie homónima)
+    const mismatch = await verifyDownloadedGrab(tid, downloadedVideoPaths)
+    if (mismatch) throw new Error(mismatch)
 
     updateDownload(tid, {
       local_status: 'completed',
@@ -553,6 +629,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
 
     const totalLinks = links.length;
     let completedBytes = 0;
+    const downloadedVideoPaths: string[] = [];
 
     for (let idx = 0; idx < links.length; idx++) {
       const link = links[idx];
@@ -627,6 +704,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
         throw new Error(`Failed to download part ${idx + 1}: ${result.error}`);
       }
       console.log(`[Worker] RD ✓ ${safeName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
+      if (VIDEO_EXT_RE.test(safeName)) downloadedVideoPaths.push(filePath)
       appendDownloadedFile(tid, filePath)
 
       completedBytes += expectedSize || result.bytes_downloaded;
@@ -636,6 +714,10 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
     if (completedBytes === 0 && links.length > 0) {
       throw new Error(`All ${links.length} link(s) failed to unrestrict or download`);
     }
+
+    // ¿Es realmente el episodio pedido? (evita releases de otra serie homónima)
+    const mismatch = await verifyDownloadedGrab(tid, downloadedVideoPaths)
+    if (mismatch) throw new Error(mismatch)
 
     updateDownload(tid, {
       local_status: 'completed',

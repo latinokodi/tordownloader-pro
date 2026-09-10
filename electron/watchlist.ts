@@ -258,6 +258,14 @@ export function markGrabFailed(torboxId: string, reason: string): void {
   } catch { /* ignore */ }
 }
 
+/** Row de grab_history asociada a un id de descarga del debrid. */
+export function getGrabByTorboxId(torboxId: string): GrabHistoryRow | undefined {
+  if (!torboxId) return undefined
+  try {
+    return getDB().prepare('SELECT * FROM grab_history WHERE torbox_id = ? ORDER BY id DESC LIMIT 1').get(torboxId) as GrabHistoryRow | undefined
+  } catch { return undefined }
+}
+
 /** Delete old EN artifacts once the replacing latino download is complete locally. */
 export function finalizeReplacement(torboxId: string): void {
   const fs = require('fs') as typeof import('fs')

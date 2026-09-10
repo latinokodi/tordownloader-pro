@@ -17,6 +17,7 @@ export interface TmdbEpisode {
   overview: string
   still: string | null
   air_date: string
+  runtime?: number | null
 }
 
 export interface TmdbDetail {

@@ -162,6 +162,13 @@ export function initDB(): void {
        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
        PRIMARY KEY (tmdb_id, media_type)
      )`,
+    `CREATE TABLE IF NOT EXISTS bad_releases (
+       info_hash TEXT PRIMARY KEY,
+       title TEXT DEFAULT '',
+       reason TEXT DEFAULT '',
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+     )`,
+    `ALTER TABLE bad_releases ADD COLUMN title VARCHAR DEFAULT ''`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
@@ -278,6 +285,49 @@ export function setMediaFolder(tmdbId: number, mediaType: string, folder: string
     ).run(tmdbId, mediaType, folder)
   } catch { /* table may not exist on very old DBs */ }
 }
+
+/** Releases descartados (p. ej. episodio de otra serie con el mismo nombre). */
+export function addBadRelease(infoHash: string, reason: string, title = ''): void {
+  const hash = String(infoHash || '').toLowerCase()
+  try {
+    if (hash) {
+      db.prepare(
+        `INSERT INTO bad_releases (info_hash, title, reason) VALUES (?, ?, ?)
+         ON CONFLICT(info_hash) DO UPDATE SET title = excluded.title, reason = excluded.reason`,
+      ).run(hash, String(title || '').slice(0, 400), String(reason || '').slice(0, 300))
+    } else if (title) {
+      // Sin hash disponible: guarda una fila marcadora para bloquear por título.
+      db.prepare('INSERT OR IGNORE INTO bad_releases (info_hash, title, reason) VALUES (?, ?, ?)')
+        .run(`title:${normalizeReleaseTitle(title)}`, String(title).slice(0, 400), String(reason || '').slice(0, 300))
+    }
+  } catch { /* table may not exist on very old DBs */ }
+}
+
+function normalizeReleaseTitle(title: string): string {
+  return String(title || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+export function getBadReleaseHashes(): Set<string> {
+  try {
+    const rows = db.prepare("SELECT info_hash FROM bad_releases WHERE info_hash NOT LIKE 'title:%'").all() as any[]
+    return new Set(rows.map((r) => String(r.info_hash)))
+  } catch { return new Set() }
+}
+
+/** Títulos (normalizados) de releases descartados, para bloquear sin hash. */
+export function getBadReleaseTitles(): Set<string> {
+  try {
+    const rows = db.prepare("SELECT title FROM bad_releases WHERE title != ''").all() as any[]
+    return new Set(rows.map((r) => normalizeReleaseTitle(r.title)).filter(Boolean))
+  } catch { return new Set() }
+}
+
+export { normalizeReleaseTitle }
 
 export function getSettings(): Settings {
   const stmt = db.prepare('SELECT * FROM settings WHERE id = 1');

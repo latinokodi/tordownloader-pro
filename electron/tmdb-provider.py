@@ -182,6 +182,7 @@ def cmd_season(tmdb_id, season_number):
             'overview': ep.get('overview', ''),
             'still': poster_url(ep.get('still_path'), 'w300'),
             'air_date': ep.get('air_date', ''),
+            'runtime': ep.get('runtime'),
         })
     return {'season_number': season_number, 'episodes': episodes}
 
