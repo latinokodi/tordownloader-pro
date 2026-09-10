@@ -30,9 +30,15 @@ export interface EpisodeInfo {
   air_date: string
 }
 
+export interface TMDBCollections {
+  movies?: { key: string; label: string; count?: number; poster?: string | null }[]
+  tv?: { key: string; label: string; count?: number; poster?: string | null }[]
+}
+
 export interface TMDBLists {
   movies: Record<string, TMDBItem[]>
   tv: Record<string, TMDBItem[]>
+  collections?: TMDBCollections
 }
 
 export interface DiscoverResult {
@@ -56,7 +62,7 @@ interface DiscoverState {
   listsError: string | null
 
   // Browse state
-  listType: 'trending' | 'popular' | 'top_rated'
+  listType: string
   mediaTab: 'movies' | 'tv'
 
   // Detail view
@@ -80,7 +86,7 @@ interface DiscoverState {
   // Actions
   setLists: (lists: TMDBLists) => void
   setListsError: (error: string) => void
-  setListType: (type: 'trending' | 'popular' | 'top_rated') => void
+  setListType: (type: string) => void
   setMediaTab: (tab: 'movies' | 'tv') => void
   setDetailItem: (item: TMDBItem | null) => void
   setDetailLoading: (loading: boolean) => void

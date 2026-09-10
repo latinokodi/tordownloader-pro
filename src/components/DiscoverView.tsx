@@ -49,6 +49,24 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
     setHasKey,
   } = store
 
+  // Colecciones disponibles para la pestaña activa (lista larga del backend;
+  // fallback a las 3 clásicas si el backend aún no las manda).
+  const FALLBACK_COLLECTIONS = [
+    { key: 'trending', label: 'Tendencias' },
+    { key: 'popular', label: 'Populares' },
+    { key: 'top_rated', label: 'Mejor valoradas' },
+  ]
+  const collections: { key: string; label: string }[] =
+    lists?.collections?.[mediaTab]?.length ? lists.collections[mediaTab]! : FALLBACK_COLLECTIONS
+
+  // Si la colección seleccionada no existe en esta pestaña (p. ej. "Al aire"
+  // solo aplica a series), saltar a la primera disponible.
+  useEffect(() => {
+    if (collections.length > 0 && !collections.some((c) => c.key === listType)) {
+      setListType(collections[0].key)
+    }
+  }, [collections, listType, setListType])
+
   // Fetch episodes when a season is selected
   useEffect(() => {
     if (!selectedSeason || !detailItem) return
@@ -483,19 +501,25 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
 
         <div className="flex-1" />
 
-        {/* List type selector */}
-        {(['trending', 'popular', 'top_rated'] as const).map((type) => (
-          <button
-            key={type}
-            className={`btn text-xs px-3 py-2 font-mono uppercase ${
-              listType === type ? 'bg-accent/10 text-accent border border-accent' : 'border border-border hover:border-accent text-text-muted'
-            }`}
-            onClick={() => setListType(type)}
-          >
-            {type === 'trending' ? 'Tendencias' : type === 'popular' ? 'Populares' : 'Mejor Valoradas'}
-          </button>
-        ))}
+        <div className="text-[11px] text-text-muted">{collections.length} colecciones</div>
       </div>
+      )}
+
+      {/* Selector de colecciones (lista larga, desplazable) */}
+      {(collections.length > 0) && (
+        <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+          {collections.map((c) => (
+            <button
+              key={c.key}
+              className={`btn text-xs px-3 py-1.5 font-mono uppercase whitespace-nowrap shrink-0 ${
+                listType === c.key ? 'bg-accent text-white border border-accent' : 'border border-border hover:border-accent text-text-muted'
+              }`}
+              onClick={() => setListType(c.key)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
       )}
 
       {/* Thumbnail grid */}

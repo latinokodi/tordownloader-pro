@@ -73,33 +73,59 @@ def format_item(item, media_type):
 
 
 def cmd_lists():
-    result = {'movies': {}, 'tv': {}}
+    """Colecciones de Explorar: listas base + cartelera/emisión + un género por colección."""
+    from concurrent.futures import ThreadPoolExecutor
 
-    for kind in ('trending', 'popular', 'top_rated'):
-        if kind == 'trending':
-            data = tmdb_get('/trending/movie/week')
-            items = data.get('results', [])
-        elif kind == 'popular':
-            data = tmdb_get('/movie/popular')
-            items = data.get('results', [])
-        else:
-            data = tmdb_get('/movie/top_rated')
-            items = data.get('results', [])
+    jobs: list[tuple[str, str, str, str, dict | None]] = [
+        ('movies', 'trending', 'Tendencias', '/trending/movie/week', None),
+        ('movies', 'popular', 'Populares', '/movie/popular', None),
+        ('movies', 'top_rated', 'Mejor valoradas', '/movie/top_rated', None),
+        ('movies', 'now_playing', 'En cartelera', '/movie/now_playing', None),
+        ('movies', 'upcoming', 'Próximamente', '/movie/upcoming', None),
+        ('tv', 'trending', 'Tendencias', '/trending/tv/week', None),
+        ('tv', 'popular', 'Populares', '/tv/popular', None),
+        ('tv', 'top_rated', 'Mejor valoradas', '/tv/top_rated', None),
+        ('tv', 'airing_today', 'Hoy en emisión', '/tv/airing_today', None),
+        ('tv', 'on_the_air', 'Al aire', '/tv/on_the_air', None),
+    ]
 
-        result['movies'][kind] = [format_item(item, 'movie') for item in items[:20]]
+    # Una colección por género (los nombres vienen localizados de TMDB).
+    for media, list_path in (('movies', '/genre/movie/list'), ('tv', '/genre/tv/list')):
+        try:
+            genres = tmdb_get(list_path, {}).get('genres', [])
+        except Exception:
+            genres = []
+        for genre in genres:
+            gid = genre.get('id')
+            name = genre.get('name')
+            if not gid or not name:
+                continue
+            path = '/discover/movie' if media == 'movies' else '/discover/tv'
+            jobs.append((media, f'genre_{gid}', name, path, {'with_genres': gid, 'sort_by': 'popularity.desc'}))
 
-    for kind in ('trending', 'popular', 'top_rated'):
-        if kind == 'trending':
-            data = tmdb_get('/trending/tv/week')
-            items = data.get('results', [])
-        elif kind == 'popular':
-            data = tmdb_get('/tv/popular')
-            items = data.get('results', [])
-        else:
-            data = tmdb_get('/tv/top_rated')
-            items = data.get('results', [])
+    result = {'movies': {}, 'tv': {}, 'collections': {'movies': [], 'tv': []}}
 
-        result['tv'][kind] = [format_item(item, 'tv') for item in items[:20]]
+    def fetch(job):
+        media, key, label, path, params = job
+        try:
+            data = tmdb_get(path, dict(params) if params else {})
+            return media, key, label, data.get('results', [])[:20]
+        except Exception:
+            return media, key, label, []
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for media, key, label, items in pool.map(fetch, jobs):
+            fmt_type = 'movie' if media == 'movies' else 'tv'
+            result[media][key] = [format_item(item, fmt_type) for item in items]
+            poster = None
+            if items and items[0].get('poster_path'):
+                poster = f"{TMDB_IMAGE}/w342{items[0]['poster_path']}"
+            result['collections'][media].append({
+                'key': key,
+                'label': label,
+                'count': len(items),
+                'poster': poster,
+            })
 
     return result
 

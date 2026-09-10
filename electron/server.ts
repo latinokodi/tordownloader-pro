@@ -30,6 +30,10 @@ const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'
 // ── Log collector (mirrors main.ts so the UI log panel works) ──
 const logBuffer: Array<{ ts: string; text: string; level: string }> = []
 const LOG_MAX = 1500
+
+// Cache de las colecciones de Explorar (spawnear Python + ~45 llamadas a TMDB es caro).
+let listsCache: { at: number; body: any } | null = null
+const LISTS_CACHE_TTL_MS = 30 * 60 * 1000
 function sendLog(level: string, ...args: any[]) {
   const text = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
   const entry = { ts: new Date().toISOString().slice(11, 19), text, level }
@@ -647,7 +651,13 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       if (api.startsWith('tmdb/lists') && method === 'GET') {
         const settings = getSettings()
         if (!settings.tmdb_api_key) return sendJson(res, 200, { success: false, error: 'TMDB API key not configured' })
-        return sendJson(res, 200, await spawnTmdb('tmdb-provider.py', ['lists'], settings.tmdb_api_key))
+        const force = (req.url || '').includes('refresh=1')
+        if (!force && listsCache && Date.now() - listsCache.at < LISTS_CACHE_TTL_MS) {
+          return sendJson(res, 200, listsCache.body)
+        }
+        const body = await spawnTmdb('tmdb-provider.py', ['lists'], settings.tmdb_api_key)
+        if (body?.success) listsCache = { at: Date.now(), body }
+        return sendJson(res, 200, body)
       }
       if (api.startsWith('tmdb/detail/') && method === 'GET') {
         // api = "tmdb/detail/<id>/<type>" → skip 2 segments
