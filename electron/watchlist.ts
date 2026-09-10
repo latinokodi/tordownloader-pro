@@ -311,10 +311,34 @@ export function finalizeReplacement(torboxId: string): void {
 export function isGrabbed(tmdbId: number, mediaType: string, season: number | null, episode: number | null): boolean {
   const db = getDB()
   const row = db.prepare(
-    `SELECT 1 as x FROM grab_history
-     WHERE tmdb_id = ? AND media_type = ? AND season IS ? AND episode IS ? AND status = 'grabbed' LIMIT 1`,
-  ).get(tmdbId, mediaType, season ?? null, episode ?? null) as any
-  return Boolean(row)
+    `SELECT * FROM grab_history
+     WHERE tmdb_id = ? AND media_type = ? AND season IS ? AND episode IS ? AND status = 'grabbed'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(tmdbId, mediaType, season ?? null, episode ?? null) as GrabHistoryRow | undefined
+  if (!row) return false
+  // Un grab cuenta como hecho solo si dejó archivo. Si nunca se materializó
+  // (p. ej. torrente con .zipx que falló al descargar), la biblioteca lo dirá:
+  // sin archivo en la carpeta destino → hay que reintentar.
+  if (row.file_name) return true
+  if (!row.dest_folder) return true
+  return folderHasEpisodeMedia(row.dest_folder, season, episode)
+}
+
+/** ¿La carpeta destino contiene el video del episodio/película? */
+function folderHasEpisodeMedia(dir: string, season: number | null, episode: number | null): boolean {
+  try {
+    const fs = require('fs') as typeof import('fs')
+    const files = fs.readdirSync(dir)
+    const video = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i
+    if (season !== null && episode !== null) {
+      const se = new RegExp(`(?:^|[^a-z0-9])s0*${season}e0*${episode}(?:[^0-9]|$)`, 'i')
+      return files.some((f) => video.test(f) && se.test(f))
+    }
+    // Película: cualquier video cuenta.
+    return files.some((f) => video.test(f))
+  } catch {
+    return true // carpeta ilegible: no forzar reintentos
+  }
 }
 
 export function grabHistoryForItem(watchlistId: number, limit = 50): GrabHistoryRow[] {

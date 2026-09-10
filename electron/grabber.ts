@@ -90,7 +90,7 @@ export function parseSizeBytes(size: unknown): number | null {
   return Math.round(val * (mult[unit] ?? 1))
 }
 
-function exceedsMaxBytes(result: GrabResultItem, maxBytes: number | null): boolean {
+export function exceedsMaxBytes(result: GrabResultItem, maxBytes: number | null): boolean {
   if (!maxBytes) return false
   const bytes = parseSizeBytes(result.size)
   if (bytes === null || bytes <= 0) return false // unknown size — never block on it
