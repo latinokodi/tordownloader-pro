@@ -440,9 +440,6 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                           {hit.title}
                         </div>
                         <div className="text-[11px] text-text-muted">{hit.year || '—'}</div>
-                        <button className="btn btn-accent w-full text-xs px-2 py-1.5 mt-auto" onClick={() => addItem(hit)} disabled={busy}>
-                          <Plus size={13} />{t.watchlist.addItem}
-                        </button>
                       </div>
                     </div>
                   ))}
