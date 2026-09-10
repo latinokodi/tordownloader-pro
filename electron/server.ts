@@ -17,6 +17,7 @@ import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch
 import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
 import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade } from './monitor'
+import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode } from './library'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -463,6 +464,27 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       }
       if (api === 'watchlist/recent-grabs' && method === 'GET') {
         return sendJson(res, 200, { success: true, data: recentGrabs(30) })
+      }
+
+      // ── Biblioteca (listado + borrado fiable) ─────────────
+      if (api === 'library' && method === 'GET') {
+        return sendJson(res, 200, { success: true, data: scanLibrary() })
+      }
+      if (api === 'library/delete' && method === 'POST') {
+        const body = await readBody(req)
+        const type = String(body.type || '')
+        const title = typeof body.title === 'string' ? body.title : ''
+        const season = typeof body.season === 'string' ? body.season : ''
+        const file = typeof body.file === 'string' ? body.file : ''
+        const forgetHistory = Boolean(body.forgetHistory)
+        let result
+        if (type === 'movie') result = await deleteMovie(title, forgetHistory)
+        else if (type === 'series') result = await deleteSeries(title, forgetHistory)
+        else if (type === 'season') result = await deleteSeason(title, season, forgetHistory)
+        else if (type === 'episode') result = await deleteEpisode(title, season, file, forgetHistory)
+        else return sendJson(res, 400, { success: false, error: 'type must be movie|series|season|episode' })
+        if (!result.ok) return sendJson(res, 400, { success: false, error: result.error })
+        return sendJson(res, 200, { success: true, data: result })
       }
 
       // ── Monitor control ───────────────────────────────────

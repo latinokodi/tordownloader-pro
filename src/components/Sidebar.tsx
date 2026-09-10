@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { LayoutDashboard, Search, BookMarked, DownloadCloud, Compass, ScrollText, Settings } from 'lucide-react'
+import { LayoutDashboard, Search, BookMarked, DownloadCloud, Compass, ScrollText, Settings, Library } from 'lucide-react'
 import { useT } from '../i18n'
 import { LangToggle } from '../i18n/LangToggle'
 
@@ -36,6 +36,7 @@ export const Sidebar = memo(function Sidebar({ activeNav, onNavChange, onSetting
         <NavItem icon={<Search size={16} />} label={t.nav.search} active={activeNav === 'search'} onClick={() => onNavChange('search')} />
         <NavItem icon={<Compass size={16} />} label={t.nav.discover} active={activeNav === 'discover'} onClick={() => onNavChange('discover')} />
         <NavItem icon={<BookMarked size={16} />} label={t.nav.watchlist} active={activeNav === 'watchlist'} onClick={() => onNavChange('watchlist')} />
+        <NavItem icon={<Library size={16} />} label={t.nav.library} active={activeNav === 'library'} onClick={() => onNavChange('library')} />
         <NavItem
           icon={<DownloadCloud size={16} />}
           label={t.nav.downloads}

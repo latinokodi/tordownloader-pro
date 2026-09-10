@@ -35,6 +35,8 @@ export function initDB(): void {
       destination_folder VARCHAR DEFAULT '',
       movies_folder VARCHAR DEFAULT '',
       series_folder VARCHAR DEFAULT '',
+      jellyfin_url VARCHAR DEFAULT '',
+      jellyfin_api_key VARCHAR DEFAULT '',
       auto_remove_completed BOOLEAN DEFAULT 0,
       tmdb_api_key VARCHAR DEFAULT '',
       last_update_prompt VARCHAR DEFAULT '',
@@ -135,6 +137,8 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN last_update_prompt VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN movies_folder VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN series_folder VARCHAR DEFAULT ''`,
+    `ALTER TABLE settings ADD COLUMN jellyfin_url VARCHAR DEFAULT ''`,
+    `ALTER TABLE settings ADD COLUMN jellyfin_api_key VARCHAR DEFAULT ''`,
     `ALTER TABLE downloads ADD COLUMN type VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN language_profile VARCHAR DEFAULT 'latino_first'`,
     `ALTER TABLE settings ADD COLUMN monitor_enabled BOOLEAN DEFAULT 1`,
@@ -191,6 +195,8 @@ export interface Settings {
   max_grab_size_gb: number;
   max_movie_size_gb: number;
   max_series_size_gb: number;
+  jellyfin_url: string;
+  jellyfin_api_key: string;
 }
 
 export interface Download {

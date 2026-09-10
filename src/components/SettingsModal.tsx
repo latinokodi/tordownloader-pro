@@ -20,6 +20,8 @@ interface SettingsSchema {
   automation_failover?: boolean
   max_movie_size_gb?: number
   max_series_size_gb?: number
+  jellyfin_url?: string
+  jellyfin_api_key?: string
 }
 
 interface Props {
@@ -564,6 +566,33 @@ export function SettingsModal({ onClose, showToast }: Props) {
                   </div>
                 </div>
                 <p className="text-xs text-text-muted mt-1">{t.settings.maxSizeHint}</p>
+              </div>
+
+              {/* Jellyfin (para el refresco tras borrar en Biblioteca) */}
+              <div className="mt-4">
+                <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.jellyfinTitle}</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-mono text-text-muted mb-1">{t.settings.jellyfinUrl}</label>
+                    <input
+                      className="input-field w-full"
+                      placeholder="http://127.0.0.1:8096"
+                      value={settings?.jellyfin_url || ''}
+                      onChange={(e) => setSettings((s) => s ? { ...s, jellyfin_url: e.target.value } : null)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-mono text-text-muted mb-1">{t.settings.jellyfinKey}</label>
+                    <input
+                      className="input-field w-full"
+                      type="password"
+                      placeholder="API key"
+                      value={settings?.jellyfin_api_key || ''}
+                      onChange={(e) => setSettings((s) => s ? { ...s, jellyfin_api_key: e.target.value } : null)}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-text-muted mt-1">{t.settings.jellyfinHint}</p>
               </div>
             </div>
 

@@ -6,6 +6,8 @@ export interface AppSettings {
   destination_folder?: string
   movies_folder?: string
   series_folder?: string
+  jellyfin_url?: string
+  jellyfin_api_key?: string
   auto_remove_completed?: boolean
   language_profile?: string
   monitor_enabled?: boolean

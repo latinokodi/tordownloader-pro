@@ -21,6 +21,7 @@ const LogPanel = lazy(() => import('./components/LogPanel').then(m => ({ default
 const DiscoverView = lazy(() => import('./components/DiscoverView').then(m => ({ default: m.DiscoverView })))
 const WatchlistView = lazy(() => import('./components/WatchlistView').then(m => ({ default: m.WatchlistView })))
 const DashboardView = lazy(() => import('./components/DashboardView').then(m => ({ default: m.DashboardView })))
+const LibraryView = lazy(() => import('./components/LibraryView').then(m => ({ default: m.LibraryView })))
 
 const CLOUD_DONE_STATUSES = ['completed', 'cached', 'finished', 'downloaded']
 
@@ -301,6 +302,15 @@ function App() {
                   <WatchlistView showToast={showToast} onActivity={refreshDownloads} />
                 </Suspense>
               </div>
+            </div>
+          )}
+
+          {/* ── BIBLIOTECA (borrado fiable) ── */}
+          {activeNav === 'library' && (
+            <div className="h-full flex flex-col space-y-6 animate-fade-in">
+              <Suspense fallback={<div className="text-text-muted font-mono text-sm p-4">Loading library...</div>}>
+                <LibraryView showToast={showToast} />
+              </Suspense>
             </div>
           )}
 
