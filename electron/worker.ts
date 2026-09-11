@@ -2,9 +2,8 @@ import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
 import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId, findWatchlistItem } from './watchlist';
-import { tmdbSeason, tmdbDetail } from './tmdb';
+import { tmdbDetail } from './tmdb';
 import { addBadRelease } from './db';
-import { execFile } from 'child_process';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
@@ -70,22 +69,19 @@ function fmtBytes(bytes: number): string {
   return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
 }
 
-/** Duración real del archivo (segundos) vía ffprobe; null si no se puede medir. */
-function probeDurationSeconds(filePath: string): Promise<number | null> {
-  return new Promise((resolve) => {
-    execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { timeout: 20_000 }, (err, stdout) => {
-      if (err) return resolve(null)
-      const seconds = parseFloat(String(stdout).trim())
-      resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : null)
-    })
-  })
-}
-
 /**
- * Un release puede ser de OTRA serie con el mismo nombre (p. ej. "Dark Matter"
- * 2015 vs 2024) o estar mal etiquetado. Si la duración del archivo no cuadra
- * con la del episodio en TMDB, se borra, se marca el grab como fallido (para
- * que el monitor reintente) y el release entra en la lista negra.
+ * Un release puede ser de OTRA serie con el mismo nombre (p. ej. la serie
+ * "Dark" 2017 colándose en una búsqueda de "Dark Matter" 2024). Se comprueba
+ * ANTES de nada que el nombre del release corresponda al título objetivo; si
+ * no, se borra, se marca el grab como fallido (para que el monitor reintente)
+ * y el release entra en la lista negra.
+ *
+ * Antes también se comparaba la DURACIÓN del archivo con el runtime de TMDB:
+ * se quitó a petición del usuario (overkill) — descargaba el archivo entero
+ * para luego borrarlo y, aun así, una homónima con duración parecida
+ * (Dark 2017 = 56 min vs Dark Matter = 59) lo pasaba. El nombre es la señal
+ * fiable y barata.
+ *
  * Devuelve el mensaje de error si hay que abortar la descarga, o null si OK.
  */
 export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[]): Promise<string | null> {
@@ -93,11 +89,8 @@ export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[
   const row = getGrabByTorboxId(torboxId)
   if (!row || row.kind !== 'episode' || !row.season || !row.episode || !row.tmdb_id) return null
 
-  // Homónimas: "Dark S02E03 720p WEBRip x264-MATTER" es de la serie Dark (2017),
-  // no de Dark Matter (2024) — y su duración (56 min) cae dentro de la
-  // tolerancia, así que la duración sola no basta. El nombre del release sí
-  // delata: se exige que corresponda al título objetivo. Los latinos usan
-  // títulos localizados (se buscan por IMDB id), así que ahí no se juzga.
+  // El nombre del release delata la serie. Los latinos usan títulos
+  // localizados (se buscan por IMDB id), así que ahí no se juzga.
   if (row.language !== 'latino' && row.title) {
     let candidates: Array<string | undefined> = []
     try {
@@ -115,34 +108,7 @@ export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[
     }
   }
 
-  let expectedMinutes: number | null = null
-  try {
-    const season = await tmdbSeason(row.tmdb_id, row.season)
-    const ep = season?.episodes?.find((e: any) => Number(e.episode_number) === Number(row.episode))
-    expectedMinutes = ep?.runtime ? Number(ep.runtime) : null
-  } catch { /* sin datos: no se puede verificar */ }
-  if (!expectedMinutes) return null
-
-  // Verifica el archivo más grande (el episodio real; ignora samples/extras).
-  let main = videoPaths[0]
-  let mainSize = 0
-  for (const p of videoPaths) {
-    try { const st = fs.statSync(p); if (st.size > mainSize) { mainSize = st.size; main = p } } catch { /* ignore */ }
-  }
-  const actual = await probeDurationSeconds(main)
-  if (!actual) return null
-  const expectedSeconds = expectedMinutes * 60
-  const tolerance = Math.max(300, expectedSeconds * 0.15)
-  const delta = Math.abs(actual - expectedSeconds)
-  if (delta <= tolerance) {
-    console.log(`[Worker] verificado: ${path.basename(main)} dura ${Math.round(actual / 60)} min (TMDB ${expectedMinutes} min)`)
-    return null
-  }
-  const reason = `Duración no coincide: ${Math.round(actual / 60)} min vs ${expectedMinutes} min esperados (¿episodio de otra serie?)`
-  console.warn(`[Worker] ✗ ${path.basename(main)}: ${reason}`)
-  deleteWrongDownload(videoPaths)
-  if (row.info_hash || row.title) addBadRelease(row.info_hash || '', reason, row.title || '')
-  return reason
+  return null
 }
 
 /** Borra el video descargado equivocado y sus subtítulos (no dejar basura). */
