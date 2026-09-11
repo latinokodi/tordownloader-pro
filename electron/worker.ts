@@ -1,8 +1,8 @@
 import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
-import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId } from './watchlist';
-import { tmdbSeason } from './tmdb';
+import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId, findWatchlistItem } from './watchlist';
+import { tmdbSeason, tmdbDetail } from './tmdb';
 import { addBadRelease } from './db';
 import { execFile } from 'child_process';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
@@ -11,7 +11,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { eventBus } from './event-bus';
-import { computeDestination, safeSegment } from './media-layout';
+import { computeDestination, safeSegment, seriesNameMatches } from './media-layout';
 
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
@@ -92,6 +92,29 @@ export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[
   if (videoPaths.length === 0) return null
   const row = getGrabByTorboxId(torboxId)
   if (!row || row.kind !== 'episode' || !row.season || !row.episode || !row.tmdb_id) return null
+
+  // Homónimas: "Dark S02E03 720p WEBRip x264-MATTER" es de la serie Dark (2017),
+  // no de Dark Matter (2024) — y su duración (56 min) cae dentro de la
+  // tolerancia, así que la duración sola no basta. El nombre del release sí
+  // delata: se exige que corresponda al título objetivo. Los latinos usan
+  // títulos localizados (se buscan por IMDB id), así que ahí no se juzga.
+  if (row.language !== 'latino' && row.title) {
+    let candidates: Array<string | undefined> = []
+    try {
+      const item = findWatchlistItem(row.tmdb_id, row.media_type)
+      const detail = await tmdbDetail(row.tmdb_id, row.media_type)
+      candidates = [detail?.original_title, item?.title, detail?.title]
+    } catch { /* sin datos: no se puede juzgar */ }
+    if (candidates.some(Boolean) && !seriesNameMatches(row.title, candidates)) {
+      const expected = candidates.filter(Boolean)[0]
+      const reason = `Es de otra serie: "${row.title}" no corresponde a "${expected}"`
+      console.warn(`[Worker] ✗ ${reason}`)
+      deleteWrongDownload(videoPaths)
+      if (row.info_hash || row.title) addBadRelease(row.info_hash || '', reason, row.title || '')
+      return reason
+    }
+  }
+
   let expectedMinutes: number | null = null
   try {
     const season = await tmdbSeason(row.tmdb_id, row.season)
@@ -117,23 +140,25 @@ export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[
   }
   const reason = `Duración no coincide: ${Math.round(actual / 60)} min vs ${expectedMinutes} min esperados (¿episodio de otra serie?)`
   console.warn(`[Worker] ✗ ${path.basename(main)}: ${reason}`)
-  // Borra el archivo equivocado (y sus subtítulos) para no dejar basura.
-  try {
-    for (const p of videoPaths) {
-      try { fs.rmSync(p, { force: true }) } catch { /* ignore */ }
-      const stem = p.replace(/\.[^./\\]+$/, '')
-      const dir = path.dirname(p)
-      try {
-        for (const entry of fs.readdirSync(dir)) {
-          if (/\.(srt|vtt|ass|ssa|sub)$/i.test(entry) && entry.startsWith(path.basename(stem) + '.')) {
-            try { fs.rmSync(path.join(dir, entry), { force: true }) } catch { /* ignore */ }
-          }
-        }
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
+  deleteWrongDownload(videoPaths)
   if (row.info_hash || row.title) addBadRelease(row.info_hash || '', reason, row.title || '')
   return reason
+}
+
+/** Borra el video descargado equivocado y sus subtítulos (no dejar basura). */
+function deleteWrongDownload(videoPaths: string[]): void {
+  for (const p of videoPaths) {
+    try { fs.rmSync(p, { force: true }) } catch { /* ignore */ }
+    const stem = p.replace(/\.[^./\\]+$/, '')
+    const dir = path.dirname(p)
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (/\.(srt|vtt|ass|ssa|sub)$/i.test(entry) && entry.startsWith(path.basename(stem) + '.')) {
+          try { fs.rmSync(path.join(dir, entry), { force: true }) } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
 }
 
 function safeMkdirSync(dirPath: string) {

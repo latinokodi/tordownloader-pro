@@ -312,3 +312,70 @@ export function safeSegment(value: string): string {
       .replace(/\.+$/, '') || 'Unknown'
   )
 }
+
+// ─── Desambiguación de series homónimas ─────────────────────────────────────
+// "Dark S02E03 720p WEBRip x264-MATTER" (serie Dark, 2017) entraba en la
+// búsqueda de "Dark Matter S02E03" porque el grupo del release ("-MATTER")
+// parece parte del título. Comparar el nombre del release contra el título
+// objetivo es la única señal fiable ANTES de descargar.
+
+const NAME_STOPWORDS = new Set([
+  'the', 'and', 'of', 'a', 'an', 'los', 'las', 'el', 'la', 'de', 'del', 'y', 'e', 'o', 'u',
+])
+
+/** Nombre → tokens alfanuméricos en minúsculas, sin acentos ni stopwords. */
+function normTokens(value: string): string[] {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0 && !NAME_STOPWORDS.has(t))
+}
+
+/**
+ * Parte "serie" de un nombre de release: lo anterior a SxxEyy, al año o a la
+ * primera etiqueta de calidad, sin corchetes de tracker ni paréntesis.
+ */
+export function releaseSeriesName(name: string): string {
+  let s = String(name || '').replace(/\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i, '')
+  s = s.replace(/\[[^\]]*\]/g, ' ').replace(/\([^)]*\)/g, ' ')
+  const cut = s.search(
+    /\bS\d{1,2}\s*E\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i,
+  )
+  return cut > 0 ? s.slice(0, cut) : s
+}
+
+/**
+ * ¿El nombre del release corresponde a alguno de los títulos del objetivo?
+ * Tolerante: ignora acentos/puntuación/stopwords y acepta que el release use
+ * solo parte del título o una variante con las mismas palabras.
+ * Devuelve true cuando no se puede juzgar (nombre vacío) — nunca bloquea por
+ * falta de datos.
+ */
+export function seriesNameMatches(releaseName: string, candidates: Array<string | undefined | null>): boolean {
+  const seriesTokens = normTokens(releaseSeriesName(releaseName))
+  const series = seriesTokens.join('')
+  if (!series) return true
+  const cands = candidates
+    .filter((c): c is string => Boolean(c && String(c).trim()))
+    .map((c) => ({ tokens: normTokens(String(c)) }))
+    .map((c) => ({ tokens: c.tokens, flat: c.tokens.join('') }))
+    .filter((c) => c.flat.length > 0)
+  if (cands.length === 0) return true
+  for (const c of cands) {
+    if (series === c.flat || series.includes(c.flat)) return true
+    // El release trae menos palabras que el título ("Gentlemen" vs "The Gentlemen"):
+    // se acepta si cubre la mayor parte del nombre.
+    if (c.flat.includes(series) && series.length / c.flat.length >= 0.7) return true
+    // Mismas palabras en otro orden o con separadores distintos.
+    if (c.tokens.every((t) => series.includes(t))) return true
+  }
+  return false
+}
+
+/** Año de 4 dígitos del nombre del release (0 si no trae). */
+export function releaseYear(name: string): number {
+  const m = String(name || '').match(/\b(19|20)\d{2}\b/)
+  return m ? parseInt(m[0], 10) : 0
+}

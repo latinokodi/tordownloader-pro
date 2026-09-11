@@ -7,7 +7,7 @@ import path from 'path'
 import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, type Settings, type DebridService, type LanguageProfile } from './db'
 import { recordGrab } from './watchlist'
 import { runPythonLines, setupSearchEnv } from './python-run'
-import { computeDestination, safeSegment } from './media-layout'
+import { computeDestination, safeSegment, seriesNameMatches, releaseYear } from './media-layout'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -135,6 +135,24 @@ function scoreResult(r: GrabResultItem, target: GrabTarget): number {
     else score -= 200 // wide/other episodes
     if (hasSeasonPackToken(t)) score -= 150
     if (/(repack|proper|real\s|v2\b)/i.test(lower)) score += 25
+    // Preferencia de calidad (igual que en películas): mejor imagen primero.
+    if (/(1080p|1080)/i.test(lower)) score += 60
+    else if (/(2160p|4k\b|uhd)/i.test(lower)) score += 80
+    else if (/(720p)/i.test(lower)) score += 30
+    // ¿Es de la serie que buscamos? "Dark S02E03 720p WEBRip x264-MATTER"
+    // (serie Dark, 2017) aparecía en la búsqueda de "Dark Matter" porque el
+    // grupo del release parece parte del título. Los proveedores latino se
+    // buscan por IMDB id, así que ahí solo se penaliza (nombres localizados).
+    if (!seriesNameMatches(t, [target.title, target.original_title])) {
+      if (!r.latino) return -750
+      score -= 250
+    } else if (target.year) {
+      // Homónimas (Dark Matter 2015 vs 2024): los grupos incluyen el año de
+      // estreno justo para distinguirlas — si viene, tiene que coincidir.
+      const y = releaseYear(t)
+      if (y === parseInt(String(target.year), 10)) score += 50
+      else if (y) score -= 250
+    }
   } else {
     // movie
     const yearMatch = t.match(/\b(19|20)\d{2}\b/)
