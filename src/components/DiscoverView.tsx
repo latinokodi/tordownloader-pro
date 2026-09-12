@@ -507,7 +507,7 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
 
       {/* Selector de colecciones (lista larga, desplazable) */}
       {(collections.length > 0) && (
-        <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+        <div className="flex gap-2 overflow-x-auto pt-2 pb-2 -mx-1 px-1 scrollbar-none">
           {collections.map((c) => (
             <button
               key={c.key}

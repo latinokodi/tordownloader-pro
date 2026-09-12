@@ -7,7 +7,7 @@ export function SearchTabsBar() {
   if (ids.length === 0) return null
 
   return (
-    <div className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-none">
+    <div className="flex gap-2 mt-2 mb-4 pt-1 overflow-x-auto pb-2 scrollbar-none">
       {ids.map((id) => {
         const tab = tabs[id]
         const isActive = id === activeTabId
