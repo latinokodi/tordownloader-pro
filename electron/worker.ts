@@ -498,7 +498,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
     console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
 
     // ── Subtítulos automáticos (spa + en) ──────────────
-    await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder);
+    await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder, downloadedVideoPaths);
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
     try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
     
@@ -525,7 +525,7 @@ const EP_RE = /[sS](\d{1,2})[eE](\d{1,2})/;
  * y descarga subtítulos (español + inglés) vía electron/subtitles.py.
  * Fire-and-forget: errores solo se loguean, nunca fallan la descarga.
  */
-async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string) {
+async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string, onlyFiles?: string[]) {
   try {
     const py = process.env.TDP_PYTHON || 'python3';
     const script = path.join(__dirname, '..', 'electron', 'subtitles.py');
@@ -533,9 +533,16 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
       console.log('[Subs] subtitles.py no encontrado, saltando descarga de subtítulos');
       return;
     }
-    const videos = fs.readdirSync(destFolder)
-      .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
-      .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
+    // Solo los videos que acaba de escribir esta descarga. Listar la carpeta
+    // entera pedía los subtítulos del EPISODIO RECIÉN DESCARGADO para todos los
+    // capítulos que ya estaban ahí (mismo nombre de archivo .srt duplicado en
+    // cada uno) — la carpeta de temporada no puede ser la fuente de verdad.
+    const justDownloaded = (onlyFiles || []).filter((p) => VIDEO_EXT_RE.test(p) && fs.existsSync(p));
+    const videos = justDownloaded.length > 0
+      ? justDownloaded.map((p) => path.basename(p))
+      : fs.readdirSync(destFolder)
+        .filter((f) => VIDEO_EXT_RE.test(f) && !f.startsWith('.'))
+        .sort((a, b) => fs.statSync(path.join(destFolder, b)).size - fs.statSync(path.join(destFolder, a)).size);
     if (videos.length === 0) return;
 
     // Resolver imdb: usar el nombre del torrent (título base sin tags)
@@ -719,7 +726,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
     console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
 
     // ── Subtítulos automáticos (spa + en) ──────────────
-    await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder);
+    await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder, downloadedVideoPaths);
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
     try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
 
