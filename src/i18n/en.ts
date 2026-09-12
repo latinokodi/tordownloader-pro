@@ -186,6 +186,8 @@ const en = {
     scheduled: 'Scheduled',
     availableToday: 'Available today',
     verifyNow: 'Check now',
+    updating: 'Updating…',
+    window: 'Programming window',
   },
   logs: {
     title: 'System Logs',

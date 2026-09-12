@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight, RefreshCw, Clock, CheckCircle2, Globe } from 'lucide-react'
 import { useT, useLang } from '../i18n'
 import { http } from '../hooks/http'
@@ -32,6 +32,10 @@ function pad(n: number): string {
 function isoOf(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
+function formatShort(iso: string, lang: string): string {
+  if (!iso) return '—'
+  return new Intl.DateTimeFormat(lang === 'es' ? 'es-ES' : 'en-US', { day: 'numeric', month: 'short' }).format(new Date(`${iso}T12:00:00`))
+}
 
 export function CalendarView({ showToast }: { showToast: (msg: string, type?: 'success' | 'error') => void }) {
   const t = useT()
@@ -42,19 +46,26 @@ export function CalendarView({ showToast }: { showToast: (msg: string, type?: 's
   const [cursor, setCursor] = useState(() => new Date())
   const [selected, setSelected] = useState<string>(() => isoOf(new Date()))
   const [checking, setChecking] = useState<number | null>(null)
+  const windowToastRef = useRef(false)
 
   const load = useCallback(async (force = false) => {
     setLoading(true)
     try {
       const res = await http<any>(`/api/calendar?days=${days}${force ? '&refresh=1' : ''}`)
-      if (res?.success) setData(res.data)
-      else if (res?.error) showToast(res.error, 'error')
+      if (res?.success) {
+        setData(res.data)
+        if (windowToastRef.current) {
+          windowToastRef.current = false
+          const d = res.data
+          showToast(`${d.events.length} ${t.calendar.pending} · ${formatShort(d.window.from, lang)} → ${formatShort(d.window.to, lang)}`)
+        }
+      } else if (res?.error) showToast(res.error, 'error')
     } catch (e: any) {
       showToast(e?.message || t.toasts.error, 'error')
     } finally {
       setLoading(false)
     }
-  }, [days, showToast, t])
+  }, [days, showToast, t, lang])
 
   useEffect(() => { load().catch(() => {}) }, [load])
 
@@ -112,6 +123,28 @@ export function CalendarView({ showToast }: { showToast: (msg: string, type?: 's
     return s.charAt(0).toUpperCase() + s.slice(1)
   }
 
+  const shortDate = (iso: string) => formatShort(iso, lang)
+  const windowFrom = data?.window?.from || ''
+  const windowTo = data?.window?.to || ''
+  const atToday = cursor.getFullYear() === new Date().getFullYear() && cursor.getMonth() === new Date().getMonth() && selected === todayIso
+
+  const changeWindow = useCallback((d: number) => {
+    const summary = (payload: CalendarPayload) =>
+      `${payload.events.length} ${t.calendar.pending} · ${formatShort(payload.window.from, lang)} → ${formatShort(payload.window.to, lang)}`
+    if (d === days) {
+      if (data) showToast(summary(data))
+      return
+    }
+    windowToastRef.current = true
+    setDays(d)
+  }, [data, days, lang, showToast, t])
+
+  const goToday = useCallback(() => {
+    setCursor(new Date())
+    setSelected(todayIso)
+    if (atToday) showToast(`${(byDate.get(todayIso) || []).length} ${t.calendar.pending} · ${fmtDay(todayIso)}`)
+  }, [atToday, byDate, showToast, t, todayIso])
+
   const checkNow = useCallback(async (itemId: number) => {
     setChecking(itemId)
     showToast(t.watchlist.checkStarted)
@@ -152,8 +185,8 @@ export function CalendarView({ showToast }: { showToast: (msg: string, type?: 's
             <ChevronRight size={16} />
           </button>
           <button
-            className="btn border border-border text-xs px-2.5 py-1.5 ml-1 hover:border-accent"
-            onClick={() => { setCursor(new Date()); setSelected(todayIso) }}
+            className={`btn border text-xs px-2.5 py-1.5 ml-1 transition-colors ${atToday ? 'border-accent text-accent' : 'border-border hover:border-accent'}`}
+            onClick={goToday}
           >
             {t.calendar.today}
           </button>
@@ -163,8 +196,10 @@ export function CalendarView({ showToast }: { showToast: (msg: string, type?: 's
           {[30, 60, 90].map((d) => (
             <button
               key={d}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${days === d ? 'bg-accent text-white' : 'text-text-muted hover:text-text-heading'}`}
-              onClick={() => setDays(d)}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all active:scale-95 ${
+                days === d ? 'bg-accent text-white shadow-sm' : 'text-text-muted hover:text-text-heading hover:bg-bg-card'
+              } ${loading && days === d ? 'opacity-70' : ''}`}
+              onClick={() => changeWindow(d)}
             >
               {d} {t.calendar.days}
             </button>
@@ -174,6 +209,9 @@ export function CalendarView({ showToast }: { showToast: (msg: string, type?: 's
         <div className="flex items-center gap-3 ml-auto text-[11px] text-text-muted">
           <span className="flex items-center gap-1"><Clock size={13} className="text-accent" />{pendingEvents} {t.calendar.pending}</span>
           <span className="flex items-center gap-1"><CheckCircle2 size={13} className="text-success" />{totalEvents - pendingEvents} {t.calendar.downloaded}</span>
+          {loading
+            ? <span className="animate-pulse text-accent">{t.calendar.updating}</span>
+            : <span className="hidden sm:inline" title={t.calendar.window}>{shortDate(windowFrom)} → {shortDate(windowTo)}</span>}
           <button
             className="btn border border-border text-xs px-2.5 py-1.5 hover:border-accent"
             onClick={() => load(true)}
@@ -199,13 +237,14 @@ export function CalendarView({ showToast }: { showToast: (msg: string, type?: 's
             const isToday = iso === todayIso
             const isSel = iso === selected
             const isPast = iso < todayIso
+            const outOfWindow = !!windowTo && iso > windowTo
             return (
               <button
                 key={iso}
                 onClick={() => setSelected(iso)}
                 className={`min-h-[112px] rounded-lg border p-1.5 text-left align-top transition-colors ${
-                  isSel ? 'border-accent bg-accent/5' : 'border-border hover:border-accent/50'
-                } ${inMonth ? 'bg-bg-card' : 'bg-bg-input/40 opacity-60'}`}
+                  isSel ? 'border-accent bg-accent/5' : outOfWindow ? 'border-dashed border-border' : 'border-border hover:border-accent/50'
+                } ${inMonth ? 'bg-bg-card' : 'bg-bg-input/40 opacity-60'} ${outOfWindow ? 'opacity-45' : ''}`}
               >
                 <div className="flex items-center justify-between">
                   <span className={`text-[11px] font-semibold ${isToday ? 'text-white bg-accent rounded-full px-1.5' : isPast ? 'text-text-muted' : 'text-text-heading'}`}>

@@ -188,6 +188,8 @@ const es: TranslationKeys = {
     scheduled: 'Programada',
     availableToday: 'Disponible hoy',
     verifyNow: 'Verificar ahora',
+    updating: 'Actualizando…',
+    window: 'Ventana de programación',
   },
   logs: {
     title: 'Registros del Sistema',
