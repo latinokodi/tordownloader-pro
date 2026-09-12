@@ -22,6 +22,7 @@ const DiscoverView = lazy(() => import('./components/DiscoverView').then(m => ({
 const WatchlistView = lazy(() => import('./components/WatchlistView').then(m => ({ default: m.WatchlistView })))
 const DashboardView = lazy(() => import('./components/DashboardView').then(m => ({ default: m.DashboardView })))
 const LibraryView = lazy(() => import('./components/LibraryView').then(m => ({ default: m.LibraryView })))
+const CalendarView = lazy(() => import('./components/CalendarView').then(m => ({ default: m.CalendarView })))
 
 const CLOUD_DONE_STATUSES = ['completed', 'cached', 'finished', 'downloaded']
 
@@ -310,6 +311,15 @@ function App() {
             <div className="h-full flex flex-col space-y-6 animate-fade-in">
               <Suspense fallback={<div className="text-text-muted font-mono text-sm p-4">Loading library...</div>}>
                 <LibraryView showToast={showToast} />
+              </Suspense>
+            </div>
+          )}
+
+          {/* ── CALENDARIO (descargas programadas) ── */}
+          {activeNav === 'calendar' && (
+            <div className="h-full flex flex-col space-y-6 animate-fade-in">
+              <Suspense fallback={<div className="text-text-muted font-mono text-sm p-4">Loading calendar...</div>}>
+                <CalendarView showToast={showToast} />
               </Suspense>
             </div>
           )}

@@ -16,7 +16,7 @@ import { initDB, getSettings, updateSettings, getDownloads, addDownload, updateD
 import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch'
 import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
-import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade } from './monitor'
+import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade, getCalendar } from './monitor'
 import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath, fetchJellyfinPoster } from './library'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
@@ -517,6 +517,12 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       }
 
       // ── Monitor control ───────────────────────────────────
+      if (api === 'calendar' && method === 'GET') {
+        const q = new URL(req.url || '', 'http://localhost').searchParams
+        const days = Math.min(180, Math.max(7, Math.trunc(Number(q.get('days')) || 60)))
+        const force = q.get('refresh') === '1'
+        return sendJson(res, 200, { success: true, data: await getCalendar(days, force) })
+      }
       if (api === 'monitor/status' && method === 'GET') {
         return sendJson(res, 200, { success: true, data: getMonitorStatus() })
       }

@@ -444,6 +444,113 @@ export function getMonitorLastSummary(): MonitorStatus['lastSummary'] {
   return lastSummary
 }
 
+// ── Calendario de descargas programadas ──────────────────
+
+export interface CalendarEvent {
+  date: string
+  itemId: number
+  title: string
+  tmdb_id: number
+  media_type: 'movie' | 'series'
+  kind: 'episode' | 'movie'
+  season: number | null
+  episode: number | null
+  episode_name: string
+  poster: string
+  language_profile: string
+  scope: string
+  grabbed: boolean
+}
+
+export interface CalendarPayload {
+  events: CalendarEvent[]
+  days: number
+  generated_at: string
+  window: { from: string; to: string }
+}
+
+let calendarCache: { at: number; days: number; payload: CalendarPayload } | null = null
+const CALENDAR_TTL_MS = 30 * 60 * 1000
+
+function addDaysIso(base: string, days: number): string {
+  const d = new Date(`${base}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Descargas programadas: episodios (temporada actual y siguiente) y películas
+ * con fecha de estreno dentro de la ventana. Marca las ya descargadas.
+ */
+export async function getCalendar(days = 60, force = false): Promise<CalendarPayload> {
+  if (!force && calendarCache && calendarCache.days === days && Date.now() - calendarCache.at < CALENDAR_TTL_MS) {
+    return calendarCache.payload
+  }
+  const today = todayIso()
+  const to = addDaysIso(today, days)
+  const items = listWatchlist().filter((i) => i.monitored)
+  const events: CalendarEvent[] = []
+
+  const processItem = async (item: WatchlistItem) => {
+    const detail = await fetchDetailCached(item)
+    if (!detail) return
+    const poster = item.poster || detail?.poster || ''
+
+    if (item.media_type === 'movie') {
+      const rel = isoDateOf(detail?.release_date || '')
+      if (!rel || rel < today || rel > to) return
+      events.push({
+        date: rel, itemId: item.id, title: item.title, tmdb_id: item.tmdb_id,
+        media_type: 'movie', kind: 'movie', season: null, episode: null, episode_name: '',
+        poster, language_profile: item.language_profile, scope: '',
+        grabbed: isGrabbed(item.tmdb_id, 'movie', null, null),
+      })
+      return
+    }
+
+    const seasons: any[] = (detail?.seasons || []).filter((s: any) => Number(s.season_number) > 0)
+    if (seasons.length === 0) return
+    const aired = seasons.filter((s: any) => !s.air_date || isoDateOf(s.air_date) <= today)
+    const currentNum = aired.length
+      ? Math.max(...aired.map((s: any) => Number(s.season_number)))
+      : Math.min(...seasons.map((s: any) => Number(s.season_number)))
+
+    for (const sn of new Set<number>([currentNum, currentNum + 1])) {
+      if (!seasons.some((s: any) => Number(s.season_number) === sn)) continue
+      let season: any = null
+      try { season = await tmdbSeason(item.tmdb_id, sn) } catch { continue }
+      for (const ep of season?.episodes || []) {
+        const date = isoDateOf(ep?.air_date || '')
+        if (!date || date < today || date > to) continue
+        const epNum = Number(ep.episode_number)
+        events.push({
+          date, itemId: item.id, title: item.title, tmdb_id: item.tmdb_id,
+          media_type: 'series', kind: 'episode', season: sn, episode: epNum,
+          episode_name: ep.name || '', poster, language_profile: item.language_profile,
+          scope: item.backfill || 'new',
+          grabbed: isGrabbed(item.tmdb_id, 'series', sn, epNum),
+        })
+      }
+    }
+  }
+
+  // Pool pequeño: cada título cuesta 1-2 llamadas a TMDB.
+  const queue = [...items]
+  const workers = Array.from({ length: Math.min(3, Math.max(1, queue.length)) }, async () => {
+    while (queue.length > 0) {
+      const it = queue.shift()
+      if (it) await processItem(it)
+    }
+  })
+  await Promise.all(workers)
+
+  events.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))
+  const payload: CalendarPayload = { events, days, generated_at: new Date().toISOString(), window: { from: today, to } }
+  calendarCache = { at: Date.now(), days, payload }
+  console.log(`[calendar] ${events.length} descarga(s) programada(s) entre ${today} y ${to}`)
+  return payload
+}
+
 // Keep the detail cache bounded.
 setInterval(() => {
   if (detailCache.size > 200) detailCache.clear()
