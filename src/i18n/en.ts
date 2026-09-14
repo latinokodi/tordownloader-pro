@@ -273,6 +273,7 @@ const en = {
     noDestFolder: 'No destination folder configured. Set one in Settings.',
     failedOpenFolder: 'Failed to open folder',
     searchFailed: 'Search failed',
+    latinoDdlPending: 'Latino already published (direct download only) — waiting for a torrent release',
   },
   update: {
     available: 'A new version is available!',

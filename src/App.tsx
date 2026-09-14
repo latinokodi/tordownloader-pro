@@ -208,6 +208,15 @@ function App() {
       if (store.activeTabId) store.setTabError(store.activeTabId, error)
     })
 
+    // Aviso: el latino ya está publicado en la web (sólo descarga directa) y el
+    // monitor no baja el inglés a propósito — se reintentará hasta que salga el torrent.
+    const cleanupDdl = ea?.onLatinoDdlPending?.((info: any) => {
+      const ep = info?.season && info?.episode
+        ? ` S${String(info.season).padStart(2, '0')}E${String(info.episode).padStart(2, '0')}`
+        : ''
+      showToast(`${t.toasts.latinoDdlPending}: ${info?.title || ''}${ep}`, 'success')
+    })
+
     // Auto-update listeners
     const cleanupUpdate = [
       ea?.onUpdateAvailable?.((v: string) => setUpdateVersion(v)),
@@ -221,6 +230,7 @@ function App() {
       window.clearInterval(timer)
       cleanupSearch?.()
       cleanupSearchError?.()
+      cleanupDdl?.()
       cleanupUpdate.forEach(fn => fn?.())
     }
   }, [refreshDownloads, showToast])

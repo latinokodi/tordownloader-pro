@@ -156,6 +156,16 @@ export interface ElectronAPI {
   latinoSearch: (imdbId: string, mediaType: string, season?: string, episode?: string) => Promise<LatinoResult[]>
   onLatinoSearchProgress: (callback: (progress: any) => void) => () => void
 
+  /** El latino ya está publicado en la web (sólo descarga directa) — aviso. */
+  onLatinoDdlPending?: (callback: (info: {
+    title?: string
+    media_type?: string
+    season?: number | null
+    episode?: number | null
+    url?: string
+    ddl?: string[]
+  }) => void) => () => void
+
   catalogManifest: () => Promise<CatalogManifest>
   catalogItems: (type: string, id: string) => Promise<CatalogItem[]>
   catalogMeta: (type: string, imdbId: string) => Promise<CatalogMeta>
@@ -267,6 +277,7 @@ export const webAPI: ElectronAPI = {
   latinoSearch: (imdbId, mediaType, season, episode) =>
     webFetch('/api/latino/search', 'POST', { imdbId, mediaType, season, episode }),
   onLatinoSearchProgress: (cb) => subscribe('latino-search-progress', cb),
+  onLatinoDdlPending: (cb) => subscribe('latino-ddl-pending', cb),
 
   catalogManifest: () => webFetch('/api/catalog/manifest'),
   catalogItems: (type, id) => webFetch(`/api/catalog/items/${type}/${id}`),

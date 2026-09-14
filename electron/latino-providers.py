@@ -633,6 +633,175 @@ def provider_cinecalidad(imdb_id, media_type, season=None, episode=None):
     return results
 
 
+# ── Provider: Cinecalidad (web) — ¿ya está publicado en latino? ────────
+#
+# El índice del addon (provider_cinecalidad) sólo lista TORRENTS, y Cinecalidad
+# publica cada episodio primero como DESCARGA DIRECTA (megaup/mediafire/...):
+# comprobado con Linternas S01E05 — la página del episodio existía con link
+# megaup y 0 magnets, mientras el índice devolvía 0 streams. Sin esta
+# comprobación la fase latino reportaba "0 resultados" y el perfil latino_first
+# bajaba el inglés creyendo que no había latino.
+#
+# Devuelve los magnets si la página los tuviera (para poder bajarlos) y publica
+# el estado en SITE_STATUS, que el bucle de stream adjunta al evento:
+#   'site': {'published': bool|None, 'has_magnet': bool, 'ddl': [...], 'url': str}
+# published=None significa "no se pudo comprobar" — el llamador sigue como antes.
+
+CC_WEB = 'https://www.cinecalidad.am'
+CC_DDL_HOSTS = (
+    'megaup', 'mediafire', 'mega.nz', 'mega.co.nz', '1fichier', 'krakenfiles',
+    'drive.google', 'ddownload', 'uploadhaven', 'gofile', 'pixeldrain', 'dood',
+    'katfile', 'rapidgator', 'nitroflare', 'clicknupload', '1cloudfile',
+)
+SITE_STATUS = {}
+
+
+def _cc_slug(text):
+    return '-'.join(normalize_title(text).split())
+
+
+_CC_SESSION = None
+
+
+def _cc_session():
+    """La web está detrás de Cloudflare: urllib a secas recibe 403, cloudscraper no."""
+    global _CC_SESSION
+    if _CC_SESSION is None:
+        import cloudscraper
+        _CC_SESSION = cloudscraper.create_scraper()
+    return _CC_SESSION
+
+
+def _cc_fetch(url, timeout=12):
+    """Cloudscraper primero (la web está tras Cloudflare); un reintento porque la
+    primera petición puede chocar con el resto de proveedores en paralelo."""
+    for _ in range(2):
+        try:
+            r = _cc_session().get(url, timeout=timeout, headers={'Referer': f'{CC_WEB}/'})
+            if r.status_code == 200 and len(r.text) > 4000:
+                return r.text
+        except Exception:
+            pass
+    try:
+        page = http_get(url, timeout=timeout, referer=f'{CC_WEB}/')
+        return page if page and len(page) > 4000 else None
+    except Exception:
+        return None
+
+
+def _cc_slug_like(path, titles):
+    """¿El slug/enlace corresponde al título buscado? (los resultados de la web
+    traen publicidad y contenido relacionado primero)."""
+    norm = normalize_title(path.replace('-', ' ').replace('/', ' '))
+    for t in titles:
+        nt = normalize_title(t)
+        if nt and nt in norm:
+            return True
+    # Títulos traducidos de forma distinta (Linternas vs Lanterns): similitud
+    # alta en el slug, sólo cuando el título inglés no aparece literalmente.
+    for t in titles:
+        nt = normalize_title(t).replace(' ', '-')
+        if len(nt) >= 5:
+            import difflib
+            if difflib.SequenceMatcher(None, nt, norm.replace(' ', '-')).ratio() >= 0.7:
+                return True
+    return False
+
+
+def provider_cinecalidad_web(imdb_id, media_type, season=None, episode=None):
+    """Mira la web de Cinecalidad: ¿el episodio/película ya está publicado?"""
+    status = {'published': None, 'has_magnet': False, 'ddl': [], 'url': ''}
+    SITE_STATUS['CinecalidadWeb'] = status
+    results = []
+    try:
+        meta = resolve_metadata(imdb_id, media_type) or {}
+        titles = [t for t in (meta.get('titles') or []) if t]
+        if not titles:
+            return results
+
+        slugs = []
+        for t in titles:
+            s = _cc_slug(t)
+            if s and s not in slugs:
+                slugs.append(s)
+        slugs = slugs[:3]
+
+        is_ep = media_type == 'series' and season and episode
+        urls = ([f'{CC_WEB}/ver-el-episodio/{s}-{int(season)}x{int(episode)}/' for s in slugs]
+                if is_ep else
+                [f'{CC_WEB}/ver-pelicula/{s}/' for s in slugs])
+
+        html, used = None, ''
+        for url in urls:
+            page = _cc_fetch(url)
+            if page:
+                html, used = page, url
+                break
+
+        # Fallback: buscar el título en la web para descubrir el slug real
+        if not html:
+            for t in titles[:2]:
+                page = _cc_fetch(f'{CC_WEB}/?s={urllib.parse.quote(t)}')
+                if not page:
+                    continue
+                if is_ep:
+                    ep_links = re.findall(r'"/ver-el-episodio/([^"\'?#]+)"', page)
+                    direct = next((l for l in ep_links
+                                   if re.search(r'[-_]%dx%d$' % (int(season), int(episode)), l)
+                                   and _cc_slug_like(l, titles)), None)
+                    if direct:
+                        used = f'{CC_WEB}/ver-el-episodio/{direct}/'
+                        html = _cc_fetch(used)
+                    else:
+                        s = next((l for l in re.findall(r'"/ver-serie/([^"\'?#]+)"', page)
+                                  if _cc_slug_like(l, titles)), None)
+                        if s:
+                            used = f'{CC_WEB}/ver-el-episodio/{s}-{int(season)}x{int(episode)}/'
+                            html = _cc_fetch(used)
+                else:
+                    m = next((l for l in re.findall(r'"/ver-pelicula/([^"\'?#]+)"', page)
+                              if _cc_slug_like(l, titles)), None)
+                    if m:
+                        used = f'{CC_WEB}/ver-pelicula/{m}/'
+                        html = _cc_fetch(used)
+                if html:
+                    break
+
+        if not html:
+            # No se pudo identificar la página: 'unknown' (None) — el llamador
+            # sigue comportándose como antes (permitir el fallback a inglés).
+            status['published'] = None
+            return results
+
+        magnets = MAGNET_RE.findall(html)
+        torrent_links = re.findall(r'href="([^"]+\.torrent[^"]*)"', html, re.IGNORECASE)
+        ddl = [h for h in CC_DDL_HOSTS if re.search(re.escape(h), html, re.IGNORECASE)]
+
+        # True = la página existe y trae enlaces (torrent o descarga directa);
+        # None = no se pudo comprobar (nunca False: un 404 puede ser "no emitido"
+        # o "no lo encuentro", y la app no debe bloquear el inglés por eso).
+        status['published'] = True if (magnets or torrent_links or ddl) else None
+        status['has_magnet'] = bool(magnets or torrent_links)
+        status['ddl'] = ddl
+        status['url'] = used
+
+        label = f'{titles[0]}'
+        if is_ep:
+            label += f' S{int(season):02d}E{int(episode):02d}'
+        for mg in magnets:
+            h = extract_info_hash(mg)
+            if not h:
+                continue
+            size = ''
+            m = re.search(r'💾\s*([\d.]+\s*[KMGT]B)', html)
+            if m:
+                size = m.group(1)
+            results.append(format_result(f'{label} (web)', build_magnet(h, label), h, size, 'CC-WEB'))
+    except Exception:
+        return results
+    return results
+
+
 # ── Provider: Comet ─────────────────────────────────────
 
 def provider_comet(imdb_id, media_type, season=None, episode=None):
@@ -726,6 +895,14 @@ def run_all(imdb_id, media_type, season=None, episode=None):
             except Exception:
                 pass
 
+    # La web se consulta FUERA del pool: compartir cloudscraper con los otros
+    # proveedores en paralelo hace que Cloudflare devuelva 403 y el chequeo
+    # fallaría (verificado). Secuencial = determinista.
+    try:
+        all_results.extend(provider_cinecalidad_web(imdb_id, media_type, season, episode))
+    except Exception:
+        pass
+
     return all_results
 
 
@@ -758,6 +935,7 @@ def main():
 
         for name in providers:
             print(json.dumps({'type': 'provider_start', 'provider': name}), flush=True)
+        print(json.dumps({'type': 'provider_start', 'provider': 'CinecalidadWeb'}), flush=True)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
@@ -781,6 +959,24 @@ def main():
                         'provider': name,
                         'results': [],
                     }), flush=True)
+
+        # ── Chequeo de la WEB de Cinecalidad (fuera del pool) ──────────────
+        # El índice del addon sólo lista torrents; la web publica el episodio
+        # antes como descarga directa. El grabber usa este 'site' para NO caer
+        # a inglés cuando el latino ya está publicado (sólo como DDL).
+        try:
+            site_results = provider_cinecalidad_web(imdb_id, media_type, season, episode)
+        except Exception:
+            site_results = []
+        all_results.extend(site_results)
+        site_payload = {
+            'type': 'provider_results',
+            'provider': 'CinecalidadWeb',
+            'results': site_results,
+        }
+        if 'CinecalidadWeb' in SITE_STATUS:
+            site_payload['site'] = SITE_STATUS['CinecalidadWeb']
+        print(json.dumps(site_payload), flush=True)
 
         print(json.dumps({'type': 'done', 'total': len(all_results)}), flush=True)
     else:

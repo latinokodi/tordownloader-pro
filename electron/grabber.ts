@@ -54,6 +54,8 @@ export interface GrabOutcome {
   latinoResults: number
   englishResults: number
   profile: LanguageProfile
+  /** El latino ya está publicado en la web (sólo descarga directa) → no se baja inglés. */
+  latinoDdl?: { url: string; ddl: string[] }
 }
 
 function pad2(n: number): string {
@@ -201,8 +203,20 @@ function dedupeResults(results: GrabResultItem[]): GrabResultItem[] {
   return [...seen.values()]
 }
 
+/** Estado de la web de Cinecalidad: ¿el latino ya está publicado? */
+export interface LatinoSiteCheck {
+  provider: string
+  published: boolean | null
+  has_magnet: boolean
+  ddl: string[]
+  url: string
+}
+
 /** Latino providers by IMDB id — mirrors the Discover-tab flow. */
-async function searchLatino(target: GrabTarget, apiKey: string): Promise<GrabResultItem[]> {
+async function searchLatino(
+  target: GrabTarget,
+  apiKey: string,
+): Promise<{ items: GrabResultItem[]; site: LatinoSiteCheck | null }> {
   const args = ['--stream', target.imdb_id || '', target.media_type]
   if (target.kind === 'episode' && target.season && target.episode) {
     args.push(String(target.season), String(target.episode))
@@ -212,16 +226,27 @@ async function searchLatino(target: GrabTarget, apiKey: string): Promise<GrabRes
   const startedAt = Date.now()
   const events = await runPythonLines('latino-providers.py', args, env, 75_000)
   const providerCounts = new Map<string, number>()
+  let site: LatinoSiteCheck | null = null
   for (const ev of events) {
     if (ev && ev.type === 'provider_results' && Array.isArray(ev.results)) {
       providerCounts.set(String(ev.provider || '?'), (providerCounts.get(String(ev.provider || '?')) || 0) + ev.results.length)
+    }
+    if (ev && ev.site && typeof ev.site === 'object') {
+      site = {
+        provider: String(ev.provider || 'web'),
+        published: ev.site.published === true ? true : ev.site.published === false ? false : null,
+        has_magnet: Boolean(ev.site.has_magnet),
+        ddl: Array.isArray(ev.site.ddl) ? ev.site.ddl.map(String) : [],
+        url: String(ev.site.url || ''),
+      }
     }
   }
   const counts = [...providerCounts.entries()].map(([p, n]) => `${p}: ${n}`).join(' · ') || 'sin eventos'
   const who = target.kind === 'episode' && target.season && target.episode
     ? `${target.title} S${pad2(target.season)}E${pad2(target.episode)}`
     : `${target.title} (${target.year || '?'})`
-  console.debug(`[grab] latino ▸ ${who}: ${counts} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`)
+  const siteNote = site ? ` · web: ${site.published === true ? (site.has_magnet ? 'publicado (con torrent)' : `publicado sólo DDL${site.ddl.length ? ` (${site.ddl.slice(0, 3).join('/')})` : ''}`) : 'sin publicar'}` : ''
+  console.debug(`[grab] latino ▸ ${who}: ${counts}${siteNote} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`)
   const out: GrabResultItem[] = []
   for (const ev of events) {
     if (ev && ev.type === 'provider_results' && Array.isArray(ev.results)) {
@@ -239,7 +264,7 @@ async function searchLatino(target: GrabTarget, apiKey: string): Promise<GrabRes
       }
     }
   }
-  return dedupeResults(out)
+  return { items: dedupeResults(out), site }
 }
 
 /** English fallback via Jackett (meta-search.py --jackett-only). */
@@ -295,7 +320,7 @@ export async function findLatinoForUpgrade(target: GrabTarget): Promise<GrabResu
   const maxBytes = capGb > 0 ? capGb * 1024 ** 3 : null
   let results: GrabResultItem[] = []
   try {
-    results = await searchLatino({ ...target, imdb_id: imdbId }, apiKey)
+    results = (await searchLatino({ ...target, imdb_id: imdbId }, apiKey)).items
   } catch (e: any) {
     console.warn(`[grab] upgrade scan error "${target.title}": ${e.message}`)
     return null
@@ -433,15 +458,47 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
         : target.language_profile === 'english_first' ? ['english', 'latino']
           : ['latino', 'english']
 
+  // Estado de la web de Cinecalidad para esta búsqueda latina (ver searchLatino).
+  let latinoSite: LatinoSiteCheck | null = null
+  let latinoSiteOnlyDdl = false
+
   for (const phase of phaseOrder) {
     if (phase === 'latino' && !imdbId) continue
     if (phase === 'english' && !process.env.JACKETT_API_KEY) {
       console.warn('[grab] English phase skipped — no Jackett API key available')
       continue
     }
+    // Sin torrent latino pero con el episodio YA publicado en la web de
+    // Cinecalidad (sólo descarga directa): el latino existe, así que no se baja
+    // el inglés. Se deja el objetivo en backoff para reintentar y avisar.
+    if (phase === 'english' && latinoSiteOnlyDdl && target.language_profile !== 'english_first') {
+      const ddl = latinoSite!.ddl.slice(0, 3).join(', ')
+      console.log(`[grab] latino publicado en la web sólo como descarga directa${ddl ? ` (${ddl})` : ''} — se omite el inglés y se reintenta más tarde: ${latinoSite!.url || 'sin url'}`)
+      base.status = 'no_source'
+      base.error = 'Latino ya publicado en Cinecalidad (sólo descarga directa) — esperando versión torrent'
+      base.latinoDdl = { url: latinoSite!.url, ddl: latinoSite!.ddl }
+      try {
+        eventBus.emit('latino-ddl-pending', {
+          title: target.title,
+          media_type: target.media_type,
+          season: target.season ?? null,
+          episode: target.episode ?? null,
+          url: latinoSite!.url,
+          ddl: latinoSite!.ddl,
+        })
+      } catch { /* el aviso no puede romper el grab */ }
+      return base
+    }
     let results: GrabResultItem[] = []
     try {
-      results = phase === 'latino' ? await searchLatino(targetWithImdb, apiKey) : await searchEnglish(target)
+      if (phase === 'latino') {
+        const latino = await searchLatino(targetWithImdb, apiKey)
+        results = latino.items
+        latinoSite = latino.site
+        latinoSiteOnlyDdl = Boolean(latino.site && latino.site.published === true && !latino.site.has_magnet)
+      } else {
+        results = await searchEnglish(target)
+      }
     } catch (e: any) {
       console.error(`[grab] ${phase} search error for "${target.title}": ${e.message}`)
       continue

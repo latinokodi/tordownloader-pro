@@ -278,7 +278,7 @@ async function catalogFetch(p: string): Promise<any> {
 
 // ── SSE event fan-out ────────────────────────────────────
 const sseClients = new Set<http.ServerResponse>()
-const SSE_CHANNELS = ['downloads-updated', 'app-log', 'search-progress', 'search-error', 'latino-search-progress', 'watchlist-updated', 'monitor-updated']
+const SSE_CHANNELS = ['downloads-updated', 'app-log', 'search-progress', 'search-error', 'latino-search-progress', 'watchlist-updated', 'monitor-updated', 'latino-ddl-pending']
 const sseUnsubs = SSE_CHANNELS.map((ch) =>
   eventBus.on(ch, (data) => {
     const payload = `event: ${ch}\ndata: ${JSON.stringify(data ?? {})}\n\n`

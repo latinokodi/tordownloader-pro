@@ -171,6 +171,13 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
   // Missed (no source) or failed — schedule the next attempt with backoff.
   const delayMin = nextDelayMinutes(attemptNumber)
   recordAttempt(item.tmdb_id, item.media_type, season, episode, isMovie ? 'movie' : 'episode', profile, delayMin)
+  // El latino ya está publicado en la web (sólo descarga directa): NO es una
+  // falta de fuente, es una espera deliberada a que salga el torrent latino.
+  if (outcome.latinoDdl) {
+    const ddl = (outcome.latinoDdl.ddl || []).slice(0, 3).join(', ')
+    log(`⏳ ${label} latino ya publicado en Cinecalidad${ddl ? ` (${ddl})` : ''} — sólo descarga directa, no se baja inglés; reintento en ${delayMin} min`)
+    return 'waiting'
+  }
   if (outcome.status === 'error') {
     log(`✗ ${label} error: ${outcome.error} — reintento en ${delayMin} min`)
     return 'error'

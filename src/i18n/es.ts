@@ -275,6 +275,7 @@ const es: TranslationKeys = {
     noDestFolder: 'No hay carpeta de destino configurada. Defina una en Configuración.',
     failedOpenFolder: 'Error al abrir carpeta',
     searchFailed: 'Búsqueda falló',
+    latinoDdlPending: 'Latino ya publicado (sólo descarga directa) — esperando la versión torrent',
   },
   update: {
     available: '¡Nueva versión disponible!',
