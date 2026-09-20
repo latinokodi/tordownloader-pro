@@ -5,9 +5,12 @@
 // no baja porque no tiene fila — y con el debrid en cooldown son lo ÚNICO que se
 // puede bajar. La decisión vive en planReconcile() (función pura, probada en
 // spec/features/debrid-reconcile.feature); aquí abajo se ejecuta contra TorBox.
-import { addDownload, countPipelineDownloads, getDB, getSettings } from './db'
+import fs from 'fs'
+import path from 'path'
+import { addDownload, countPipelineDownloads, getDB, getSettings, getMediaFolder } from './db'
 import { TorboxAPI } from './torbox'
 import { parseReleaseName, seriesNameMatches, getAltTitlesCached, computeDestination } from './media-layout'
+import { qualityFromName, parseQualitySetting } from './quality'
 import { isGrabbed, listWatchlist } from './watchlist'
 import { eventBus } from './event-bus'
 
@@ -31,6 +34,10 @@ export interface ReconcileContext {
   knownTorrentIds: number[]
   isOnDisk: (tmdbId: number, mediaType: 'series' | 'movie', season: number | null, episode: number | null) => boolean
   maxSizeGb: (mediaType: 'series' | 'movie') => number
+  /** Cuántos episodios de esa temporada hay ya en disco (null = no se pudo comprobar). */
+  seasonOnDisk?: (tmdbId: number, season: number) => number | null
+  /** Calidad mínima aceptable (0 = cualquiera). */
+  minQuality?: number
 }
 
 export interface ReconcileDecision {
@@ -40,6 +47,8 @@ export interface ReconcileDecision {
   mediaType: 'series' | 'movie'
   season?: number
   episode?: number
+  /** Pack de temporada completa (sin episodio): llena toda la temporada de golpe. */
+  pack?: boolean
   /** El debrid ya lo tiene listo (se puede bajar ya). */
   ready: boolean
   sizeGb: number
@@ -95,7 +104,27 @@ export function planReconcile(torrents: DebridTorrent[], ctx: ReconcileContext):
     // Sin marcador de episodio: pack de temporada de una serie monitorizada, o película.
     const seriesHit = ctx.watched.find((w) => w.mediaType === 'series' && seriesNameMatches(t.name, w.titles, []))
     if (seriesHit) {
-      descartar(t, SEASON_ONLY_RE.test(t.name) ? 'pack de temporada (sin episodio)' : 'pack/colección de serie (sin episodio)')
+      // Pack de temporada: se adopta SÓLO si la temporada está entera vacía (así no
+      // puede duplicar nada) y el pack cumple la calidad mínima y el tope de tamaño.
+      // Es la vía para llenar temporadas completas cuando el debrid ya lo tiene
+      // cacheado y los releases sueltos están muertos (swarm sin seeds).
+      const seasonOnly = /\bS(\d{1,2})\b/i.exec(t.name) || /\b(?:season|temporada)[\s._-]*(\d{1,2})\b/i.exec(t.name)
+      const season = seasonOnly ? Number(seasonOnly[1]) : 0
+      if (!season) { descartar(t, 'pack/colección de serie (sin temporada)'); continue }
+      const minQ = Number(ctx.minQuality || 0)
+      if (minQ > 0 && qualityFromName(t.name) > 0 && qualityFromName(t.name) < minQ) {
+        descartar(t, `pack por debajo de la calidad mínima (${qualityFromName(t.name)}p < ${minQ}p)`)
+        continue
+      }
+      const cap = ctx.maxSizeGb('series')
+      if (cap > 0 && sizeGb > cap) { descartar(t, `supera el tope (${sizeGb.toFixed(2)} GB > ${cap} GB)`); continue }
+      const onDisk = ctx.seasonOnDisk ? ctx.seasonOnDisk(seriesHit.tmdbId, season) : null
+      if (onDisk === null) {
+        descartar(t, 'pack de temporada (no se pudo comprobar la temporada — no se adopta)')
+        continue
+      }
+      if (onDisk > 0) { descartar(t, `pack de temporada (S${String(season).padStart(2, '0')} ya tiene ${onDisk} episodio(s) — se bajan sueltos)`); continue }
+      adopt.push({ torrentId: t.id, name: t.name, tmdbId: seriesHit.tmdbId, mediaType: 'series', season, pack: true, ready, sizeGb })
       continue
     }
     const movie = ctx.watched.find((w) => w.mediaType === 'movie' && seriesNameMatches(t.name, w.titles, []))
@@ -196,6 +225,33 @@ export async function reconcileDebrid(opts: { limit?: number; dry?: boolean } = 
     isOnDisk: (tmdbId, mediaType, season, episode) => isGrabbed(tmdbId, mediaType, season, episode),
     maxSizeGb: (mediaType) =>
       mediaType === 'movie' ? Number(settings.max_movie_size_gb) || 0 : Number(settings.max_series_size_gb) || 0,
+    minQuality: parseQualitySetting(settings.min_video_quality),
+    // Cuántos episodios de esa temporada hay ya en disco: un pack sólo se adopta
+    // si la temporada está VACÍA (así no puede duplicar nada). null = no se pudo
+    // comprobar → no se adopta (mejor no tocar que arriesgar duplicados).
+    seasonOnDisk: (tmdbId, season) => {
+      try {
+        const folder = getMediaFolder(tmdbId, 'series')
+        const root = String(settings.series_folder || '')
+        if (!folder || !root) return null
+        const base = path.join(root, folder)
+        if (!fs.existsSync(base)) return 0
+        let count = 0
+        for (const entry of fs.readdirSync(base)) {
+          if (!/^season[\s._-]*0*\d+$/i.test(entry)) continue
+          const dir = path.join(base, entry)
+          if (!fs.statSync(dir).isDirectory()) continue
+          for (const f of fs.readdirSync(dir)) {
+            if (!/\.(mkv|mp4|avi|m4v|ts|webm)$/i.test(f)) continue
+            const m = /\bS(\d{1,2})\s*[Ee]\d{1,3}\b/i.exec(f)
+            if (m && Number(m[1]) === season) count += 1
+          }
+        }
+        return count
+      } catch {
+        return null
+      }
+    },
   })
 
   // Margen: no adoptar más de lo que se podría procesar; el tope real de

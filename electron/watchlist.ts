@@ -184,6 +184,60 @@ export function recordGrab(row: {
   )
 }
 
+/**
+ * Añade una fila 'grabbed' SOLO si ese episodio/película no tiene ya una con
+ * archivo. Lo usa el worker al terminar una descarga (sobre todo packs: sin esto
+ * el monitor no sabía que los episodios estaban en disco y los volvía a bajar).
+ */
+export function addGrabHistoryIfMissing(row: {
+  tmdb_id: number
+  media_type: string
+  season: number | null
+  episode: number | null
+  kind: 'movie' | 'episode' | 'season_pack'
+  title: string
+  language?: string
+  source?: string
+  status: 'grabbed'
+  torbox_id?: string
+  dest_folder?: string
+  file_name?: string
+}): boolean {
+  const db = getDB()
+  const existing = db.prepare(
+    `SELECT id, file_name FROM grab_history
+     WHERE tmdb_id = ? AND media_type = ? AND season IS ? AND episode IS ? AND status = 'grabbed'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(row.tmdb_id, row.media_type, row.season ?? null, row.episode ?? null) as { id: number; file_name: string } | undefined
+  if (existing && existing.file_name) return false
+  if (existing) {
+    db.prepare('UPDATE grab_history SET file_name = ?, dest_folder = ? WHERE id = ?')
+      .run(String(row.file_name || '').slice(0, 1000), String(row.dest_folder || '').slice(0, 1000), existing.id)
+    return true
+  }
+  const wl = db.prepare('SELECT id FROM watchlist WHERE tmdb_id = ? AND media_type = ? LIMIT 1')
+    .get(row.tmdb_id, row.media_type) as { id: number } | undefined
+  db.prepare(
+    `INSERT INTO grab_history (watchlist_id, tmdb_id, media_type, season, episode, kind, title, language, source, status, torbox_id, dest_folder, file_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    wl?.id ?? null,
+    row.tmdb_id,
+    row.media_type,
+    row.season ?? null,
+    row.episode ?? null,
+    row.kind,
+    String(row.title || '').slice(0, 500),
+    row.language || '',
+    row.source || 'download',
+    row.status,
+    row.torbox_id || '',
+    String(row.dest_folder || '').slice(0, 1000),
+    String(row.file_name || '').slice(0, 1000),
+  )
+  return true
+}
+
 /** Grab history rows that are in English and could be upgraded to latino. */
 export function englishGrabbedRows(watchlistId: number, limit = 4): GrabHistoryRow[] {
   const db = getDB()

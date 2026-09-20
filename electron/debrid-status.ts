@@ -58,6 +58,27 @@ export function forgetAccountStatus(): void {
   cached = null
 }
 
+/** Estados sin datos: si el debrid no ha conseguido nada, se libera al llegar al límite. */
+const STUCK_NO_DATA = ['checking', 'metadl', 'queued']
+/** Estados con transferencia pero posiblemente estancados: se les da 4× el límite. */
+const STUCK_SLOW = ['downloading', 'incomplete']
+
+/**
+ * ¿Fila atascada? Un torrent que el debrid nunca consigue (swarm muerto) dejaba
+ * la fila en 'checking' para siempre y ocupaba una plaza de
+ * `max_concurrent_downloads` (visto: dos filas de una serie bloqueando 2/3 y
+ * dejando el backfill a un tercio de su capacidad).
+ * Los estados con transferencia ('downloading'/'incomplete') son legítimos en
+ * descargas grandes, así que sólo se liberan pasados 4× el límite.
+ */
+export function isStaleTorrent(state: string, ageMinutes: number, limitMinutes: number): boolean {
+  if (limitMinutes <= 0) return false
+  const s = String(state || '').toLowerCase()
+  if (STUCK_NO_DATA.some((x) => s.startsWith(x))) return ageMinutes >= limitMinutes
+  if (STUCK_SLOW.some((x) => s.startsWith(x))) return ageMinutes >= limitMinutes * 4
+  return false
+}
+
 /** Lee el estado de la cuenta (cacheado 10 min). `force` salta la caché. */
 export async function getAccountStatus(opts: { token?: string; force?: boolean } = {}): Promise<AccountStatus | null> {
   if (!opts.force && cached && Date.now() - cached.at < STATUS_TTL_MS) return cached

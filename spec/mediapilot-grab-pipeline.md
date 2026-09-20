@@ -230,9 +230,54 @@ id"). Medido en la cuenta real: **cada intento durante el cooldown lo alarga**
 - La reconciliación (B9) sigue trabajando durante el cooldown: es cuando más vale,
   porque los cacheados son lo único que se puede bajar.
 
+### B12 · Añadidos manuales con carpeta destino explícita
+`POST /api/downloads/add` acepta `dest_folder` opcional: cuando se conoce el
+título (o el usuario la fija), la fila nace con la carpeta definitiva y el worker
+no la adivina del nombre del release. Sin `dest_folder` el worker la calcula como
+siempre (con el parser corregido).
+
+### B13 · Todo lo descargado queda registrado en el historial
+Al terminar una descarga, el worker registra en `grab_history` una fila por cada
+video (temporada/episodio sacados del NOMBRE DEL ARCHIVO, no del torrent) con su
+`dest_folder` y `file_name`. Es lo que hace que el monitor sepa que ese episodio
+ya está en disco: sin esto, un pack de temporada se volvía a descargar entero en
+el siguiente tick (el caso real: 3 packs, 57 episodios). Si el título no se puede
+resolver (ni por el grab ni por la carpeta de `media_folders`) no se registra
+nada: mejor no tocar que inventar.
+
+### B14 · Subtítulos también en packs
+El nombre de un pack sólo trae la temporada (`FBI.S01.COMPLETE…`), así que la
+petición de subtítulos se quedaba sin `--season/--episode` y los packs terminaban
+con 0 subtítulos. Ahora el episodio se saca del nombre de cada ARCHIVO.
+
+### B15 · Orden de pistas de audio
+Si la primera pista de audio no es de un idioma preferido (español/latino primero,
+inglés después) y otra sí, el worker reordena con `ffmpeg -c copy`: la preferida
+queda por defecto y el resto detrás. Caso real: un pack ITA-ENG dejaba el italiano
+como pista por defecto (Jellyfin reproducía en italiano) y había que remuxear 22
+archivos a mano. Si ninguna pista es preferida no se toca nada, y la sustitución
+sólo ocurre tras verificar que el remux conserva la duración.
+
+### B16 · Torrents atascados sueltan su plaza solos
+Una fila cuyo torrent lleva demasiado tiempo sin progreso en el debrid
+(`checking`/`metadl`/`queued` ≥ `TDP_STALE_TORRENT_MIN`, por defecto 120 min;
+`downloading`/`incomplete` ≥ 4× ese límite, porque ahí sí hay transferencia
+legítima) se marca fallida y se borra el torrent remoto: libera la plaza de
+`max_concurrent_downloads`. Caso real: dos filas en `checking` comían 2 de 3 plazas
+durante horas.
+
+### B17 · Packs de temporada cacheados para llenar temporadas vacías
+Un pack que corresponde a un título monitorizado se adopta cuando: cumple la
+calidad mínima (B11), no supera el tope de tamaño y **la temporada está entera
+vacía** (0 episodios en disco, comprobado en el sistema de archivos — si no se
+puede comprobar, no se adopta). Así llena temporadas completas sin posibilidad de
+duplicar, que es lo único que se puede bajar cuando el debrid está en cooldown y
+los releases sueltos tienen el swarm muerto. Si la temporada ya tiene algo, se
+descartan los packs y se siguen bajando episodios sueltos.
+
 ## 9. Success criteria (verificables)
 
-1. `npm run spec` en verde, con escenarios que cubren B1–B5, B8, B9 y B10.
+1. `npm run spec` en verde (93 escenarios), con las conductas B1–B17 cubiertas.
 2. `POST /api/library/heal` sobre la biblioteca real devuelve `changed:false`.
 3. `scripts/audit-tv-layout.py` → 0 problemas; sin episodios duplicados.
 4. Logs reales muestran: `cola: N episodio(s) encolado(s) — 3/3 en curso`,

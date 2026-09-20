@@ -23,8 +23,10 @@ import {
 import {
   isInCooldown,
   cooldownFilter,
+  isStaleTorrent,
   type AccountStatus,
 } from '../../electron/debrid-status'
+import { episodeFromFileName, reorderedAudioIndexes } from '../../electron/postprocess'
 
 export interface World {
   titles?: string[]
@@ -56,6 +58,14 @@ export interface World {
   parsed?: ParsedRelease
   minQuality?: VideoQuality
   qualityOk?: boolean
+  fileEpisode?: { season: number; episode: number } | null
+  audioStreams?: Array<{ index: number; language?: string }>
+  audioOrder?: string
+  torrentState?: string
+  torrentAge?: number
+  staleLimit?: number
+  staleRelease?: boolean
+  seasonCounts?: Record<string, number>
 }
 
 export interface StepRun {
@@ -300,6 +310,8 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
         isOnDisk: (tmdbId, mediaType, season, episode) =>
           world.onDisk?.has(mediaType === 'series' ? `${tmdbId}:S${season}E${episode}` : `${tmdbId}:movie`) || false,
         maxSizeGb: (mediaType) => (mediaType === 'movie' ? caps.movie : caps.series),
+        minQuality: (world.minQuality ?? 1080) as number,
+        seasonOnDisk: (tmdbId, season) => world.seasonCounts?.[`${tmdbId}:${season}`] ?? 0,
       })
     },
   },
@@ -384,6 +396,99 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       if (world.qualityOk === undefined) throw new Error('no se evaluó ningún release antes')
       const want = expected === 'cumple'
       if (world.qualityOk !== want) throw new Error(want ? 'no cumplía la calidad mínima' : 'cumplía y debía descartarse')
+    },
+  },
+  // ── B13–B16 · post-proceso de descargas ────────────────────────────────
+  {
+    pattern: /^el archivo se llama "([^"]*)"$/,
+    fn: ({ world }, name) => { world.fileEpisode = episodeFromFileName(name) },
+  },
+  {
+    pattern: /^miro su episodio$/,
+    fn: ({ world }) => { if (world.fileEpisode === undefined) throw new Error('no se indicó ningún archivo') },
+  },
+  {
+    pattern: /^es de la temporada "([^"]*)" episodio "([^"]*)"$/,
+    fn: ({ world }, season, episode) => {
+      const ref = world.fileEpisode
+      if (!ref) throw new Error('el archivo no tenía episodio')
+      if (String(ref.season) !== season || String(ref.episode) !== episode) {
+        throw new Error(`S${ref.season}E${ref.episode} · esperado S${season}E${episode}`)
+      }
+    },
+  },
+  {
+    pattern: /^no tiene episodio$/,
+    fn: ({ world }) => {
+      if (world.fileEpisode) throw new Error(`se sacó S${world.fileEpisode.season}E${world.fileEpisode.episode} de un nombre sin episodio`)
+    },
+  },
+  {
+    pattern: /^las pistas de audio son "([^"]*)"$/,
+    fn: ({ world }, list) => {
+      world.audioStreams = list.split(',').map((l, i) => ({ index: i, language: l.trim() }))
+    },
+  },
+  {
+    pattern: /^decido si hay que reordenar el audio$/,
+    fn: ({ world }) => {
+      const streams = world.audioStreams || []
+      world.audioOrder = reorderedAudioIndexes(streams).map((i) => streams[i]?.language || '').join(',')
+    },
+  },
+  {
+    pattern: /^el orden final del audio es "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      if (!world.audioOrder) throw new Error('no se evaluaron pistas de audio antes')
+      if (world.audioOrder !== expected) throw new Error(`orden ${world.audioOrder} · esperado ${expected}`)
+    },
+  },
+  {
+    pattern: /^un torrent en estado "([^"]*)" creado hace (\d+) minutos$/,
+    fn: ({ world }, state, age) => {
+      world.torrentState = state
+      world.torrentAge = Number(age)
+    },
+  },
+  {
+    pattern: /^el límite de torrents atascados es "([^"]*)" minutos$/,
+    fn: ({ world }, min) => { world.staleLimit = Number(min) },
+  },
+  {
+    pattern: /^compruebo si hay que liberar su plaza$/,
+    fn: ({ world }) => {
+      world.staleRelease = isStaleTorrent(String(world.torrentState || ''), Number(world.torrentAge || 0), Number(world.staleLimit ?? 120))
+    },
+  },
+  {
+    pattern: /^el torrent "(se libera|no se libera)"$/,
+    fn: ({ world }, expected) => {
+      const want = expected === 'se libera'
+      if (world.staleRelease !== want) {
+        throw new Error(`estado "${world.torrentState}" (${world.torrentAge} min) → ${world.staleRelease ? 'se libera' : 'no se libera'}`)
+      }
+    },
+  },
+  {
+    pattern: /^la calidad mínima para la adopción es "([^"]*)"$/,
+    fn: ({ world }, q) => { world.minQuality = parseQualitySetting(q) },
+  },
+  {
+    pattern: /^en la biblioteca del título (\d+) la temporada (\d+) tiene (\d+) episodios?$/,
+    fn: ({ world }, tmdb, season, count) => {
+      world.seasonCounts = world.seasonCounts || {}
+      world.seasonCounts[`${tmdb}:${season}`] = Number(count)
+    },
+  },
+  {
+    pattern: /^se adopta el torrent (\d+) como "([^"]*)" "S(\d+)" completo$/,
+    fn: ({ world }, id, title, season) => {
+      const hit = needPlan(world).adopt.find((d) => d.torrentId === Number(id))
+      if (!hit) throw new Error(`no se adoptó el pack ${id} (descartado: ${reasonOf(world, Number(id))})`)
+      if (!hit.pack) throw new Error('se adoptó como episodio suelto y era un pack de temporada')
+      if (Number(hit.season) !== Number(season)) throw new Error(`temporada ${hit.season} · esperada ${season}`)
+      const w = world.watched?.find((x) => x.tmdbId === hit.tmdbId)
+      if (w && title && !w.titles.includes(title)) throw new Error(`título ${w.titles.join('/')} · esperado ${title}`)
     },
   },
   {

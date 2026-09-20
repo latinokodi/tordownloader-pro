@@ -145,7 +145,7 @@ function ensureSearchEnv(tmdbKey: string) {
 
 // ── Handler implementations (ported from main.ts IPC) ─────
 
-async function addMagnetHandler(magnet: string, service: string, type: string) {
+async function addMagnetHandler(magnet: string, service: string, type: string, destFolder?: string) {
   const settings = getSettings()
   if (service === 'realdebrid') {
     if (!settings.realdebrid_token) return { success: false, error: 'Real-Debrid token is not configured' }
@@ -174,8 +174,8 @@ async function addMagnetHandler(magnet: string, service: string, type: string) {
       const { id } = TorboxAPI.torrentIdentity(result.data)
       if (id) {
         const existing = getDownloadByTorboxId(id)
-        if (existing) updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any })
-        else addDownload({ torbox_id: id, name: result.data.name || 'Pending...', status: 'pending', progress: 0, service: 'torbox', type: type as any })
+        if (existing) updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any, ...(destFolder ? { dest_folder: destFolder } : {}) })
+        else addDownload({ torbox_id: id, name: result.data.name || 'Pending...', status: 'pending', progress: 0, local_status: 'pending', service: 'torbox', type: type as any, ...(destFolder ? { dest_folder: destFolder } : {}) })
         eventBus.emit('downloads-updated')
       }
     }
@@ -326,7 +326,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       if (api === 'downloads' && method === 'GET') return sendJson(res, 200, getDownloads())
       if (api === 'downloads/add' && method === 'POST') {
         const body = await readBody(req)
-        return sendJson(res, 200, await addMagnetHandler(body.magnet, body.service || 'torbox', body.type || ''))
+        return sendJson(res, 200, await addMagnetHandler(body.magnet, body.service || 'torbox', body.type || '', body.dest_folder || undefined))
       }
       if (api === 'downloads/add-torrent-url' && method === 'POST') {
         const body = await readBody(req)

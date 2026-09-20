@@ -35,7 +35,7 @@ Feature: Adopción de lo que el debrid ya tiene
       | id       | nombre                                           | estado | tamaño_gb |
       | 95006787 | FBI.S01.COMPLETE.720p.AMZN.WEBRip.x264-GalaxyTV | cached | 6.83      |
     When reconcilio el debrid
-    Then se descarta el torrent 95006787 porque "pack de temporada"
+    Then se descarta el torrent 95006787 porque "calidad mínima"
 
   Scenario: Un título que no está monitorizado no se adopta
     Given estos títulos monitorizados
@@ -123,6 +123,35 @@ Feature: Adopción de lo que el debrid ya tiene
     When reconcilio el debrid
     Then se adopta el torrent 100872761 como "FBI" "S07E20"
     And el destino del torrent 100872761 es "FBI (2018)/Season 7"
+
+  Scenario: Se adopta un pack cacheado de una temporada entera vacía
+    Given estos títulos monitorizados
+      | tmdb_id | tipo   | títulos | año  |
+      | 80748   | series | FBI     | 2018 |
+    And en el debrid hay estos torrents
+      | id        | nombre                                              | estado | tamaño_gb |
+      | 95006787  | FBI.S01.COMPLETE.720p.AMZN.WEBRip.x264-GalaxyTV     | cached | 6.83      |
+      | 101018999 | FBI.S06.COMPLETE.1080p.AMZN.WEB-DL.DDP5.1.H.264-FLUX | cached | 38.69    |
+    And el tope es de "0" GB para series y "0" GB para películas
+    And la calidad mínima para la adopción es "1080p"
+    And en la biblioteca del título 80748 la temporada 1 tiene 0 episodios
+    And en la biblioteca del título 80748 la temporada 6 tiene 0 episodios
+    When reconcilio el debrid
+    Then se adopta el torrent 101018999 como "FBI" "S06" completo
+    And se descarta el torrent 95006787 porque "calidad mínima"
+
+  Scenario: Un pack de una temporada que ya tiene episodios no se adopta
+    Given estos títulos monitorizados
+      | tmdb_id | tipo   | títulos | año  |
+      | 80748   | series | FBI     | 2018 |
+    And en el debrid hay estos torrents
+      | id       | nombre                                         | estado | tamaño_gb |
+      | 10099999 | FBI 2018 Season 7 Complete 1080p WEB x264 i_c  | cached | 23.62     |
+    And el tope es de "0" GB para series y "0" GB para películas
+    And la calidad mínima para la adopción es "1080p"
+    And en la biblioteca del título 80748 la temporada 7 tiene 7 episodios
+    When reconcilio el debrid
+    Then se descarta el torrent 10099999 porque "ya tiene 7"
 
   Scenario: Una película cacheada de un título monitorizado que falta se adopta
     Given estos títulos monitorizados

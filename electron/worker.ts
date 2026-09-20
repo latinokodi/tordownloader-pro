@@ -2,8 +2,10 @@ import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, releaseStalledPreflights } from './db';
 import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId, findWatchlistItem } from './watchlist';
+import { episodeFromFileName, registerDownloadedEpisodes, normalizeAudioOrder, resolveFolderOwner } from './postprocess';
 import { tmdbDetail } from './tmdb';
 import { addBadRelease } from './db';
+import { isStaleTorrent } from './debrid-status';
 import { Downloader, DownloadProgress, isDebridCDN } from './downloader';
 import path from 'path';
 import fs from 'fs';
@@ -189,6 +191,8 @@ export function startWorker(mainWindow: BrowserWindow | null) {
       // ── Poll TorBox ──────────────────────────
       if (settings.torbox_token) {
         await pollTorBox(settings, mainWindow);
+        // Filas atascadas en el debrid (spec B16): liberar la plaza por sí sola.
+        await reapStaleTorrents(settings).catch(() => {});
       }
 
       // ── Poll Real-Debrid ─────────────────────
@@ -206,6 +210,29 @@ export function startWorker(mainWindow: BrowserWindow | null) {
 }
 
 // ── TorBox polling ────────────────────────────────────
+
+/**
+ * Filas que llevan demasiado tiempo sin progreso en el debrid (swarm muerto):
+ * se marcan como fallidas y se borra el torrent remoto para liberar la plaza.
+ * Genérico para cualquier título; umbral configurable con
+ * TDP_STALE_TORRENT_MIN (0 = desactivado).
+ */
+const STALE_TORRENT_MINUTES = Number(process.env.TDP_STALE_TORRENT_MIN || 120)
+
+async function reapStaleTorrents(settings: any): Promise<void> {
+  if (STALE_TORRENT_MINUTES <= 0) return
+  const tb = new TorboxAPI(settings.torbox_token)
+  for (const dl of getDownloads()) {
+    const local = String(dl.local_status || '').toLowerCase()
+    if (local.startsWith('downloading') || local === 'completed') continue
+    const age = (Date.now() - new Date(dl.created_at || Date.now()).getTime()) / 60_000
+    if (!isStaleTorrent(String(dl.status || ''), age, STALE_TORRENT_MINUTES)) continue
+    console.log(`[Worker] torrent sin progreso (${dl.status}, ${Math.round(age)} min) — se libera la plaza y se reintentará: ${String(dl.name || '').slice(0, 60)}`)
+    try { await tb.controlTorrent(dl.torbox_id, 'delete') } catch { /* puede no existir ya */ }
+    updateDownload(dl.torbox_id, { local_status: `failed: torrent sin progreso en el debrid (${dl.status})` })
+    try { markGrabFailed(dl.torbox_id, `torrent sin progreso (${dl.status})`) } catch { /* nada */ }
+  }
+}
 
 async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
   const tb = new TorboxAPI(settings.torbox_token);
@@ -533,6 +560,36 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
 
     // ── Subtítulos automáticos (spa + en) ──────────────
     await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder, downloadedVideoPaths, tid);
+    // ── Lo que antes había que hacer a mano con los packs (spec B13/B15) ──
+    // 1) registrar cada episodio en el historial → el monitor ya sabe que está
+    //    en disco y no lo vuelve a bajar (antes se re-descargaba el pack entero);
+    // 2) dejar el audio en el orden preferido (inglés/español primero) cuando el
+    //    release trae otro idioma por defecto (p. ej. packs ITA-ENG).
+    try {
+      const grabRow = getGrabByTorboxId(tid)
+      const owner = resolveFolderOwner(grabRow?.tmdb_id, destFolder, type)
+      if (owner) {
+        const added = registerDownloadedEpisodes({
+          tmdbId: owner.tmdb_id,
+          mediaType: owner.media_type,
+          torrentName: dlData.name || '',
+          destFolder,
+          files: downloadedVideoPaths,
+          torboxId: tid,
+        })
+        if (added > 0) console.log(`[Worker] ${added} episodio(s) registrados en el historial (no se volverán a bajar)`)
+      } else {
+        console.debug(`[Worker] sin dueño en la watchlist para ${destFolder} — no se registran episodios`)
+      }
+    } catch (e: any) {
+      console.warn(`[Worker] registro de episodios falló: ${e?.message || e}`)
+    }
+    try {
+      const reordered = await normalizeAudioOrder(downloadedVideoPaths)
+      if (reordered > 0) console.log(`[Worker] ${reordered} archivo(s) con el audio reordenado al idioma preferido`)
+    } catch (e: any) {
+      console.warn(`[Worker] reordenación de audio falló: ${e?.message || e}`)
+    }
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
     try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
     
@@ -631,8 +688,14 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
       const videoPath = path.join(destFolder, v);
       const args = ['electron/subtitles.py', 'fetch', '--title', title, '--type', isSeries ? 'series' : 'movie', '--dest', videoPath];
       if (imdbId) args.push('--imdb', imdbId);
-      if (isSeries && epMatch) {
-        args.push('--season', epMatch[1], '--episode', epMatch[2]);
+      // En packs, el nombre del TORRENT sólo trae la temporada ("FBI.S01.COMPLETE…"):
+      // el episodio se saca del nombre del ARCHIVO. Sin esto, los packs se quedaban
+      // con 0 subtítulos (había que bajarlos a mano, uno por uno).
+      const fileEp = episodeFromFileName(v)
+      const seasonArg = epMatch ? epMatch[1] : fileEp ? String(fileEp.season) : ''
+      const episodeArg = epMatch ? epMatch[2] : fileEp ? String(fileEp.episode) : ''
+      if (isSeries && seasonArg && episodeArg) {
+        args.push('--season', seasonArg, '--episode', episodeArg);
       }
       await new Promise<void>((resolve) => {
         const proc = spawn(py, [script, ...args.slice(1)], { env: process.env as any });

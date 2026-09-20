@@ -285,6 +285,23 @@ export function getMediaFolder(tmdbId: number, mediaType: string): string {
   } catch { return '' }
 }
 
+/**
+ * Busca el dueño de una carpeta de biblioteca por su nombre ("FBI (2018)",
+ * "Materia oscura (2026)"…). Genérico: lo usa el worker al terminar una descarga
+ * para saber de qué título son los episodios y no volver a bajarlos.
+ */
+export function findMediaFolderByName(name: string): { tmdb_id: number; media_type: string } | null {
+  const clean = String(name || '').trim().toLowerCase()
+  if (!clean) return null
+  try {
+    const rows = db.prepare('SELECT tmdb_id, media_type, folder FROM media_folders').all() as any[]
+    const hit = rows.find((r) => String(r.folder || '').trim().toLowerCase() === clean)
+    return hit ? { tmdb_id: hit.tmdb_id, media_type: hit.media_type } : null
+  } catch {
+    return null
+  }
+}
+
 export function setMediaFolder(tmdbId: number, mediaType: string, folder: string): void {
   if (!tmdbId || !folder) return
   try {
