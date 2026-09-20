@@ -15,6 +15,20 @@ import { computeDestination, safeSegment, seriesNameMatches } from './media-layo
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
 const activeDownloaders = new Map<string, Downloader>();
+/** Última vez que se avisó "en espera" por descarga (evita spam cada 10 s). */
+const lastWaitLog = new Map<string, number>();
+
+/**
+ * Aviso de "en espera por el tope de concurrencia", como mucho una vez por
+ * minuto y descarga: el worker pasa por cada fila cada 10 s y sin esto el
+ * registro se llenaba del mismo mensaje.
+ */
+function logWaiting(tid: string, name: string, tag: string, active: number, max: number): void {
+  const last = lastWaitLog.get(tid) || 0;
+  if (Date.now() - last < 60_000) return;
+  lastWaitLog.set(tid, Date.now());
+  console.debug(`[${tag}] "${name}" en espera — ${active}/${max} descargas en curso`);
+}
 
 /** Cancel an in-progress local download by its TorBox ID. Returns true if something was aborted. */
 export function cancelLocalDownload(tid: string): boolean {
@@ -228,8 +242,16 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
 
       const completedStates = ['completed', 'cached', 'finished'];
 
+      // Tope de descargas simultáneas (settings.max_concurrent_downloads).
+      // Sin esto el worker arrancaba TODAS las filas pendientes a la vez y la
+      // conexión se repartía entre decenas de archivos.
+      const maxConcurrent = Math.max(1, Number(settings.max_concurrent_downloads) || 3);
+
       if (completedStates.includes(state.toLowerCase()) && ['pending', 'queued'].includes(record.local_status)) {
         if (!activeLocalDownloads.has(tid)) {
+          if (activeLocalDownloads.size >= maxConcurrent) {
+            logWaiting(tid, name, 'Worker', activeLocalDownloads.size, maxConcurrent);
+          } else {
           console.log(`[Worker] Queued TorBox download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
@@ -239,6 +261,7 @@ async function pollTorBox(settings: any, mainWindow: BrowserWindow | null) {
             activeLocalDownloads.delete(tid);
             eventBus.emit('downloads-updated');
           });
+          }
         }
       }
 
@@ -329,9 +352,13 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
       }
 
       const completedStates = ['downloaded', 'finished'];
+      const maxRdConcurrent = Math.max(1, Number(settings.max_concurrent_downloads) || 3);
 
       if (completedStates.includes(effectiveState) && ['pending', 'queued'].includes(record.local_status)) {
         if (!activeLocalDownloads.has(tid)) {
+          if (activeLocalDownloads.size >= maxRdConcurrent) {
+            logWaiting(tid, name, 'RD', activeLocalDownloads.size, maxRdConcurrent);
+          } else {
           console.log(`[Worker] Queued RD download: ${name} (${tid})`)
           updateDownload(tid, { local_status: 'queued' });
           activeLocalDownloads.set(tid, true);
@@ -341,6 +368,7 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
             activeLocalDownloads.delete(tid);
             eventBus.emit('downloads-updated');
           });
+          }
         }
       }
 

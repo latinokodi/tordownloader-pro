@@ -9,7 +9,7 @@
 //    persisted across restarts. Ticks are cheap dispatchers, not blanket
 //    per-episode searches every cycle.
 //  - A target stops being wanted once grabbed or the item is removed.
-import { getSettings, updateSettings, type WatchlistItem, type BackfillScope } from './db'
+import { getSettings, updateSettings, countPipelineDownloads, type WatchlistItem, type BackfillScope } from './db'
 import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem, englishGrabbedRows, markReplacePending, latestGrabFor } from './watchlist'
 import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, nextDelayMinutes, type MonitorAttempt } from './attempts'
 import { grab, findLatinoForUpgrade, type GrabTarget, type GrabOutcome } from './grabber'
@@ -25,10 +25,15 @@ export interface MonitorStatus {
   running: boolean
   lastRun: string | null
   lastSummary: { processed: number; grabbed: number; waiting: number; deferred: number; errors: number } | null
+  /** Descargas en cola o en curso y tope configurado. */
+  queueDepth: number
+  maxConcurrent: number
 }
 
 let tickTimer: NodeJS.Timeout | null = null
+let backfillTimer: NodeJS.Timeout | null = null
 let running = false
+let backfillBusy = false
 let lastRun: string | null = null
 let lastSummary: MonitorStatus['lastSummary'] = null
 
@@ -55,6 +60,8 @@ export function getMonitorStatus(): MonitorStatus {
     running,
     lastRun,
     lastSummary,
+    queueDepth: countPipelineDownloads(),
+    maxConcurrent: Math.max(1, Number(s.max_concurrent_downloads) || 3),
   }
 }
 
@@ -91,6 +98,24 @@ const SEASON_SCAN_BUDGET = 6 // max TMDB season fetches per series per tick
 const scanCursor = new Map<number, number>() // rotation cursor for 'all' scope
 
 /**
+ * Lista de episodios de una temporada, cacheada. La cola de backfill recorre
+ * las temporadas cada pocos segundos; sin caché serían decenas de llamadas a
+ * TMDB por minuto. La lista de episodios ya emitidos no cambia, así que un TTL
+ * corto basta (y el tick normal sigue viendo los recién emitidos).
+ */
+const seasonCache = new Map<string, { at: number; data: any }>()
+const SEASON_CACHE_TTL_MS = 10 * 60 * 1000
+
+async function tmdbSeasonCached(tmdbId: number, seasonNumber: number): Promise<any> {
+  const key = `${tmdbId}:${seasonNumber}`
+  const hit = seasonCache.get(key)
+  if (hit && Date.now() - hit.at < SEASON_CACHE_TTL_MS) return hit.data
+  const data = await tmdbSeason(tmdbId, seasonNumber)
+  seasonCache.set(key, { at: Date.now(), data })
+  return data
+}
+
+/**
  * Episodes of ONE season that are wanted under the item's backfill scope.
  * Rules (aired-only; future handled by later ticks):
  *   new          → air_date >= item.added_at (no backfill)
@@ -108,7 +133,7 @@ async function seasonWantedEpisodes(
 ): Promise<DueTarget[]> {
   const today = todayIso()
   const addedDate = isoDateOf(item.added_at)
-  const epList = await tmdbSeason(item.tmdb_id, seasonNumber)
+  const epList = await tmdbSeasonCached(item.tmdb_id, seasonNumber)
   const episodes: any[] = epList?.episodes || []
 
   let latestAired: string | null = null
@@ -295,6 +320,34 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
   }
 
   // series — wanted episodes depend on the per-title backfill scope.
+  const { targets, seasonTag, scope } = await collectSeriesTargets(item, detail)
+  // El tick normal se queda con un puñado de objetivos (no busca en cada
+  // vuelta por toda la serie); los ya emitidos los va sacando la cola de
+  // backfill, que solo está limitada por las descargas simultáneas.
+  const tickTargets = targets.slice(0, MAX_TARGETS_PER_TICK)
+  const targetNames = tickTargets
+    .map((t) => (t.kind === 'movie' ? 'película' : `${t.tracked ? '*' : ''}S${String(t.season).padStart(2, '0')}E${String(t.episode).padStart(2, '0')}`))
+    .join(', ')
+  if (tickTargets.length > 0) {
+    console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] → ${tickTargets.length} objetivo(s): ${targetNames}`)
+  } else {
+    console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] — sin objetivos (idle)`)
+  }
+  await attemptTargets(item, detail, tickTargets, res)
+  // Idle series (nothing wanted under its scope) contribute nothing.
+  updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
+  return res
+}
+
+/**
+ * Episodios ya emitidos que corresponden a una serie bajo su alcance de
+ * backfill, ordenados (más nuevos primero). Sin recorte: el llamador decide
+ * cuántos intenta.
+ */
+async function collectSeriesTargets(
+  item: WatchlistItem,
+  detail: any,
+): Promise<{ targets: DueTarget[]; seasonTag: string; scope: BackfillScope }> {
   const scope: BackfillScope = item.backfill || 'new'
   const airedSeasons: any[] = (detail?.seasons || [])
     .filter((s: any) => Number(s.season_number) > 0)
@@ -325,7 +378,6 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
 
     for (const sn of seasonNumbers) {
       fresh.push(...(await seasonWantedEpisodes(item, sn, scope, currentNum)))
-      if (fresh.length >= MAX_TARGETS_PER_TICK) break
     }
   }
 
@@ -337,41 +389,63 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
     if (!already) fresh.push({ kind: 'episode', season: a.season, episode: a.episode, tracked: true })
   }
 
-  // Newest targets first; backfills are capped per tick.
+  // Newest targets first.
   fresh.sort((a, b) => (b.season! - a.season!) || (b.episode! - a.episode!))
-  const targets = fresh.slice(0, MAX_TARGETS_PER_TICK)
-
   const seasonTag = airedSeasons.length > 0 ? `S${Number([...airedSeasons].sort((a: any, b: any) => Number(b.season_number) - Number(a.season_number))[0].season_number)}` : '—'
-  const targetNames = targets
-    .map((t) => (t.kind === 'movie' ? 'película' : `${t.tracked ? '*' : ''}S${String(t.season).padStart(2, '0')}E${String(t.episode).padStart(2, '0')}`))
-    .join(', ')
-  if (targets.length > 0) {
-    console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] → ${targets.length} objetivo(s): ${targetNames}`)
-  } else {
-    console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] — sin objetivos (idle)`)
-  }
+  return { targets: fresh, seasonTag, scope }
+}
 
+/** Objetivos que se están intentando ahora mismo (evita duplicados tick/cola). */
+const inFlightTargets = new Set<string>()
+
+/**
+ * Intenta una lista de objetivos. Respeta el backoff y el estado real en disco
+ * (`isGrabbed`) y no repite un objetivo que ya esté en vuelo (el tick y la cola
+ * de backfill corren a la vez). Con `continuous` se corta cuando la cola de
+ * descargas está llena: el único límite es la concurrencia.
+ */
+async function attemptTargets(
+  item: WatchlistItem,
+  detail: any,
+  targets: DueTarget[],
+  res: { grabbed: number; waiting: number; deferred: number; errors: number },
+  opts: { continuous?: boolean } = {},
+): Promise<void> {
+  const maxConcurrent = Math.max(1, Number(getSettings().max_concurrent_downloads) || 3)
   for (const t of targets) {
+    const key = `${item.tmdb_id}:${item.media_type}:${t.season ?? ''}:${t.episode ?? ''}`
+    if (inFlightTargets.has(key)) continue
+    // El otro camino (tick ↔ cola) puede haberlo grabado hace un momento.
+    if (isGrabbed(item.tmdb_id, item.media_type, t.season ?? null, t.episode ?? null)) continue
+    if (opts.continuous) {
+      const depth = countPipelineDownloads()
+      if (depth >= maxConcurrent) {
+        console.debug(`[Backfill] "${item.title}" en pausa — ${depth}/${maxConcurrent} descargas en la cola`)
+        break
+      }
+    }
     if (t.tracked) {
-      const att = getAttempt(item.tmdb_id, 'series', t.season!, t.episode!)
+      const att = getAttempt(item.tmdb_id, item.media_type, t.season ?? null, t.episode ?? null)
       if (att && att.next_attempt && att.next_attempt > new Date().toISOString()) {
         res.deferred += 1
         continue
       }
       // Episode got grabbed out-of-band (manual download)? Drop the row.
-      if (isGrabbed(item.tmdb_id, 'series', t.season!, t.episode!)) {
-        deleteAttempt(item.tmdb_id, 'series', t.season!, t.episode!)
+      if (isGrabbed(item.tmdb_id, item.media_type, t.season ?? null, t.episode ?? null)) {
+        deleteAttempt(item.tmdb_id, item.media_type, t.season ?? null, t.episode ?? null)
         continue
       }
     }
-    const state = await attemptTarget(item, detail, t)
-    if (state === 'grabbed') res.grabbed += 1
-    else if (state === 'error') res.errors += 1
-    else res.waiting += 1
+    inFlightTargets.add(key)
+    try {
+      const state = await attemptTarget(item, detail, t)
+      if (state === 'grabbed') res.grabbed += 1
+      else if (state === 'error') res.errors += 1
+      else res.waiting += 1
+    } finally {
+      inFlightTargets.delete(key)
+    }
   }
-  // Idle series (nothing wanted under its scope) contribute nothing.
-  updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
-  return res
 }
 
 // ── Autoconsolidación de carpetas duplicadas ────────────────────────────────
@@ -461,6 +535,8 @@ export async function runMonitorTick(force = false): Promise<MonitorStatus['last
   } finally {
     running = false
   }
+  // El tick deja hueco en la cola: que la cola de backfill lo aproveche ya.
+  runBackfillTick().catch(() => { /* la próxima vuelta lo reintenta */ })
   return lastSummary
 }
 
@@ -490,6 +566,107 @@ export function forceCheckItem(itemId: number): boolean {
   return true
 }
 
+// ── Cola de backfill continuo ───────────────────────────────────────────────
+// Los episodios YA emitidos no esperan al tick (30 min): se van encolando en
+// cadena y el ÚNICO límite es el número de descargas simultáneas
+// (settings.max_concurrent_downloads, 3 por defecto). Antes el tick intentaba 5
+// por vuelta y el resto esperaba media hora, así que bajar la serie completa de
+// FBI (~180 capítulos) costaba ~20 h.
+const BACKFILL_INTERVAL_MS = 15_000
+let lastQueueLog = 0
+
+/** ¿Queda algún episodio ya emitido sin descargar? (para el resumen) */
+async function pendingBackfillCount(items: WatchlistItem[]): Promise<number> {
+  let total = 0
+  for (const item of items) {
+    if (item.media_type !== 'series') continue
+    const detail = await fetchDetailCached(item)
+    if (!detail) continue
+    const { targets } = await collectSeriesTargets(item, detail)
+    total += targets.filter((t) => !isGrabbed(item.tmdb_id, 'series', t.season ?? null, t.episode ?? null)).length
+  }
+  return total
+}
+
+/**
+ * Una vuelta de la cola: recorre los títulos monitorizados y encola episodios
+ * ya emitidos mientras haya hueco (cola < max_concurrent_downloads). No aplica
+ * esperas por intervalo: lo que no cabe se queda para la vuelta siguiente, que
+ * llega en segundos.
+ */
+export async function runBackfillTick(): Promise<{ grabbed: number; waiting: number; errors: number; queue: number }> {
+  const summary = { grabbed: 0, waiting: 0, errors: 0, queue: 0 }
+  const settings = getSettings()
+  if (!settings.monitor_enabled) {
+    summary.queue = countPipelineDownloads()
+    return summary
+  }
+  // No se bloquea mientras el tick está en curso: `attemptTargets` ya evita
+  // repetir un objetivo en vuelo y el tick puede tardar minutos con muchos
+  // títulos (bloquear aquí dejaba la cola vacía entre tandas).
+  if (backfillBusy) {
+    summary.queue = countPipelineDownloads()
+    return summary
+  }
+  backfillBusy = true
+  try {
+    const maxConcurrent = Math.max(1, Number(settings.max_concurrent_downloads) || 3)
+    let depth = countPipelineDownloads()
+    if (depth >= maxConcurrent) {
+      summary.queue = depth
+      if (Date.now() - lastQueueLog > 60_000) {
+        lastQueueLog = Date.now()
+        console.debug(`[Backfill] cola llena — ${depth}/${maxConcurrent} descargas en curso; nada nuevo que encolar`)
+      }
+      return summary
+    }
+    const items = listWatchlist().filter((i) => i.monitored && i.media_type === 'series')
+    for (const item of items) {
+      if (depth >= maxConcurrent) break
+      const detail = await fetchDetailCached(item)
+      if (!detail) continue
+      const { targets } = await collectSeriesTargets(item, detail)
+      const pending = targets.filter((t) => !isGrabbed(item.tmdb_id, 'series', t.season ?? null, t.episode ?? null))
+      if (pending.length === 0) continue
+      const res = { grabbed: 0, waiting: 0, deferred: 0, errors: 0 }
+      await attemptTargets(item, detail, pending, res, { continuous: true })
+      summary.grabbed += res.grabbed
+      summary.waiting += res.waiting
+      summary.errors += res.errors
+      depth = countPipelineDownloads()
+    }
+    summary.queue = depth
+    if (summary.grabbed > 0) {
+      log(`cola: ${summary.grabbed} episodio(s) encolado(s) — ${depth}/${maxConcurrent} en curso`)
+    } else if (summary.waiting > 0 || summary.errors > 0) {
+      console.debug(`[Backfill] sin cambios — ${summary.waiting} sin fuente, ${summary.errors} con error (${depth}/${maxConcurrent} en curso)`)
+    }
+    if (depth === 0 && summary.grabbed === 0) {
+      const rest = await pendingBackfillCount(items)
+      if (rest > 0) console.debug(`[Backfill] ${rest} episodio(s) pendientes, todos en tiempo de espera`)
+    }
+  } catch (e: any) {
+    console.warn(`[Backfill] vuelta fallida: ${e.message}`)
+  } finally {
+    backfillBusy = false
+  }
+  return summary
+}
+
+export function startBackfillLoop(): void {
+  if (backfillTimer) clearInterval(backfillTimer)
+  backfillTimer = setInterval(() => {
+    runBackfillTick().catch((e) => console.warn(`[Backfill] ${e.message}`))
+  }, BACKFILL_INTERVAL_MS)
+}
+
+export function stopBackfillLoop(): void {
+  if (backfillTimer) {
+    clearInterval(backfillTimer)
+    backfillTimer = null
+  }
+}
+
 export function startMonitor(): void {
   stopMonitor()
   const settings = getSettings()
@@ -497,6 +674,7 @@ export function startMonitor(): void {
   log(`starting — interval ${minutes} min (enabled=${Boolean(settings.monitor_enabled)})`)
   if (settings.monitor_enabled) {
     setTimeout(() => kickMonitor(), 8_000)
+    startBackfillLoop()
   }
   tickTimer = setInterval(() => {
     const s = getSettings()
@@ -513,6 +691,7 @@ export function stopMonitor(): void {
     clearInterval(tickTimer)
     tickTimer = null
   }
+  stopBackfillLoop()
 }
 
 export function getMonitorLastSummary(): MonitorStatus['lastSummary'] {

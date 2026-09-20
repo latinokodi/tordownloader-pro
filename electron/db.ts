@@ -150,6 +150,7 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN last_monitor_run VARCHAR DEFAULT ''`,
     `ALTER TABLE downloads ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
     `ALTER TABLE downloads ADD COLUMN expected_runtime_min REAL DEFAULT NULL`,
+    `ALTER TABLE settings ADD COLUMN max_concurrent_downloads INTEGER DEFAULT 3`,
     `ALTER TABLE watchlist ADD COLUMN backfill VARCHAR DEFAULT 'new'`,
     `ALTER TABLE settings ADD COLUMN max_grab_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE settings ADD COLUMN max_movie_size_gb INTEGER DEFAULT 0`,
@@ -212,6 +213,8 @@ export interface Settings {
   max_series_size_gb: number;
   jellyfin_url: string;
   jellyfin_api_key: string;
+  /** Descargas simultáneas máximas (cola de backfill y worker). */
+  max_concurrent_downloads: number;
 }
 
 export interface Download {
@@ -411,6 +414,38 @@ export function releaseStalledPreflights(): number {
   try {
     const info = db.prepare("UPDATE downloads SET local_status = 'pending' WHERE local_status = 'preflight'").run()
     return Number((info as any)?.changes) || 0
+  } catch { return 0 }
+}
+
+/**
+ * Descargas que están consumiendo ancho de banda ahora mismo (bajando o
+ * esperando el turno del worker). Es el número que limita la concurrencia.
+ */
+export function countDownloadingFiles(): number {
+  try {
+    const row = db.prepare(
+      `SELECT COUNT(*) AS n FROM downloads
+        WHERE local_status LIKE 'Downloading%' OR local_status = 'queued'`,
+    ).get() as any
+    return Number(row?.n) || 0
+  } catch { return 0 }
+}
+
+/**
+ * Profundidad de la cola: filas ya grabadas que aún no han terminado (en
+ * validación, esperando turno o bajando). La cola de backfill mantiene este
+ * número por debajo del límite para no acumular grabaciones.
+ */
+export function countPipelineDownloads(): number {
+  try {
+    const row = db.prepare(
+      `SELECT COUNT(*) AS n FROM downloads
+        WHERE local_status IS NULL
+           OR local_status = ''
+           OR local_status IN ('pending', 'queued', 'preflight')
+           OR local_status LIKE 'Downloading%'`,
+    ).get() as any
+    return Number(row?.n) || 0
   } catch { return 0 }
 }
 
