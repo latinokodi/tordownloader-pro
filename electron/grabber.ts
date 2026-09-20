@@ -13,6 +13,7 @@ import { RealDebridAPI } from './realdebrid'
 import { eventBus } from './event-bus'
 import { tmdbDetail } from './tmdb'
 import { isVideoName, probeAddedTorrent, type RemoteFile } from './preflight'
+import { getAccountStatus, isInCooldown, cooldownFilter, cooldownLabel } from './debrid-status'
 
 export type GrabLanguage = 'latino' | 'english'
 
@@ -64,7 +65,7 @@ export interface GrabResultItem {
 
 export interface GrabOutcome {
   ok: boolean
-  status: 'grabbed' | 'no_source' | 'error'
+  status: 'grabbed' | 'no_source' | 'error' | 'cooldown'
   language?: 'latino' | 'english'
   source?: string
   service?: DebridService
@@ -652,6 +653,15 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
   let latinoSite: LatinoSiteCheck | null = null
   let latinoSiteOnlyDdl = false
 
+  // Cooldown del debrid (spec B10): en cooldown sólo entran releases que el
+  // debrid ya tiene cacheados. Se lee una vez por grab (cacheado 10 min).
+  const account = await getAccountStatus({ token: settings.automation_service === 'torbox' ? settings.torbox_token : undefined })
+  const inCooldown = isInCooldown(account)
+  if (inCooldown) {
+    console.log(`[TorBox] cuenta en cooldown hasta ${cooldownLabel(account)} — sólo se pueden añadir releases ya cacheados`)
+  }
+  let cooldownHit = false
+
   for (const phase of phaseOrder) {
     if (phase === 'latino' && !imdbId) continue
     if (phase === 'english' && !process.env.JACKETT_API_KEY) {
@@ -729,10 +739,21 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     }
 
     const type: 'movie' | 'series' = target.kind === 'movie' ? 'movie' : 'series'
-    const candidates = rankCandidates(results, target).slice(0, MAX_CANDIDATES_PER_PHASE)
+    let candidates = rankCandidates(results, target).slice(0, MAX_CANDIDATES_PER_PHASE)
     if (candidates.length === 0) {
       console.debug(`[grab] ${phase}: ${results.length} resultado(s) pero ninguno válido para el objetivo`)
       continue
+    }
+    // En cooldown sólo se prueban los cacheados; los demás fallarían en el debrid
+    // y ALARGAN el cooldown (medido: 03:59 → 08:03 UTC en la cuenta real).
+    if (inCooldown) {
+      const { usable, skipped } = cooldownFilter(candidates, true)
+      if (skipped.length > 0) {
+        console.debug(`[grab] ${phase}: ${skipped.length} candidato(s) no cacheados omitidos — debrid en cooldown`)
+        cooldownHit = true
+      }
+      candidates = usable
+      if (candidates.length === 0) continue
     }
     console.log(`[grab] ${phase}: ${candidates.length} candidato(s) a validar — primero: ${candidates[0].title} (${candidates[0].size}) [${candidates[0].indexer}]${candidates[0].cached ? ' (en caché)' : ''}`)
 
@@ -807,6 +828,13 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
       console.log(`[grab] ✓ ${target.media_type} "${target.title}"${target.kind === 'episode' ? ` S${target.season}E${target.episode}` : ''} → ${phase} (${candidate.indexer}) via ${addedVia} → ${destFolder}`)
       return base
     }
+  }
+  // Cooldown del debrid (spec B10): si lo único que había eran releases no
+  // cacheados, el objetivo no es "sin fuente" — está diferido. El monitor usa ese
+  // estado para NO gastar intento/backoff (cada intento alarga el cooldown).
+  if (cooldownHit) {
+    base.status = 'cooldown'
+    base.error = `debrid en cooldown (${cooldownLabel(account)}) y sin releases cacheados`
   }
   return base
 }

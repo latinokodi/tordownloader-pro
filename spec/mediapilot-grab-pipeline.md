@@ -214,9 +214,25 @@ puede bajar.
   `POST /api/debrid/reconcile`. Respeta `max_concurrent_downloads` al bajar (el
   tope lo aplica el worker) y registra el resumen con el motivo de cada descarte.
 
+### B10 · Cooldown del debrid
+TorBox entra en cooldown al exigirle de más: durante el cooldown sólo acepta
+torrents que **ya tiene en caché**; `createtorrent` falla para el resto
+(`success` sin `torrent_id`, que la app reportaba como "did not return a torrent
+id"). Medido en la cuenta real: **cada intento durante el cooldown lo alarga**
+(03:59 → 08:03 UTC), así que insistir es contraproducente.
+- La app lee el estado de la cuenta (`/user/me` → `cooldown_until`, cacheado
+  10 min) y, si está en cooldown: intenta **sólo candidatos cacheados**, no gasta
+  intento/backoff del episodio (el objetivo queda "diferido por cooldown") y baja
+  el ritmo del backfill (una búsqueda cada 10 min en vez de cada 15 s).
+- El motivo real se registra una vez por ventana (`⏸ debrid en cooldown …`) en
+  vez de un error por episodio sin explicación, y se expone en
+  `GET /api/debrid/status` (`inCooldown`, `cooldownUntil`) para que la UI avise.
+- La reconciliación (B9) sigue trabajando durante el cooldown: es cuando más vale,
+  porque los cacheados son lo único que se puede bajar.
+
 ## 9. Success criteria (verificables)
 
-1. `npm run spec` en verde, con escenarios que cubren B1–B5, B8 y B9.
+1. `npm run spec` en verde, con escenarios que cubren B1–B5, B8, B9 y B10.
 2. `POST /api/library/heal` sobre la biblioteca real devuelve `changed:false`.
 3. `scripts/audit-tv-layout.py` → 0 problemas; sin episodios duplicados.
 4. Logs reales muestran: `cola: N episodio(s) encolado(s) — 3/3 en curso`,

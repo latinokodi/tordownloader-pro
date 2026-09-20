@@ -17,6 +17,11 @@ import {
   type ReconcilePlan,
   type WatchedTitle,
 } from '../../electron/debrid-reconcile'
+import {
+  isInCooldown,
+  cooldownFilter,
+  type AccountStatus,
+} from '../../electron/debrid-status'
 
 export interface World {
   titles?: string[]
@@ -40,6 +45,11 @@ export interface World {
   onDisk?: Set<string>
   caps?: { series: number; movie: number }
   plan?: ReconcilePlan
+  account?: AccountStatus
+  now?: number
+  candidates?: Array<{ title: string; cached?: boolean }>
+  usable?: Array<{ title: string; cached?: boolean }>
+  inCooldown?: boolean
 }
 
 export interface StepRun {
@@ -346,6 +356,56 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       }
       const dest = await adoptionDestination(settings, d, watched)
       if (dest.folder !== expected) throw new Error(`destino de adopción ${dest.folder} · esperado ${expected}`)
+    },
+  },
+
+  // ── B10 · cooldown del debrid ──────────────────────────────────────────
+  {
+    pattern: /^el debrid tiene cooldown hasta "([^"]*)"$/,
+    fn: ({ world }, iso) => {
+      world.account = { cooldownUntil: iso || null, at: 0 }
+    },
+  },
+  {
+    pattern: /^la hora actual es "([^"]*)"$/,
+    fn: ({ world }, iso) => { world.now = Date.parse(iso) },
+  },
+  {
+    pattern: /^estos candidatos$/,
+    fn: ({ world, rows }) => {
+      world.candidates = rows.map((r) => ({ title: r[0], cached: (r[1] || '').toLowerCase().startsWith('s') }))
+    },
+  },
+  {
+    pattern: /^intento bajarlos$/,
+    fn: ({ world }) => {
+      world.inCooldown = isInCooldown(world.account, world.now)
+      world.usable = cooldownFilter(world.candidates || [], Boolean(world.inCooldown)).usable
+    },
+  },
+  {
+    pattern: /^se intentan "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      const got = (world.usable || []).map((c) => c.title).join(', ')
+      const want = expected.split(',').map((s) => s.trim()).filter(Boolean).join(', ')
+      if (got !== want) throw new Error(`se intentarían: ${got}\n            esperado:     ${want}`)
+    },
+  },
+  {
+    pattern: /^no se intenta ningún candidato$/,
+    fn: ({ world }) => {
+      if ((world.usable || []).length > 0) throw new Error(`se intentarían ${world.usable!.length} candidato(s)`)
+    },
+  },
+  {
+    pattern: /^el objetivo queda "([^"]*)"$/,
+    fn: ({ world }, esperado) => {
+      if (esperado === 'diferido por cooldown') {
+        if (!world.inCooldown) throw new Error('el debrid no está en cooldown según el escenario')
+        if ((world.usable || []).length > 0) throw new Error('hay candidatos usables: no se difiere')
+        return
+      }
+      throw new Error(`estado esperado desconocido: ${esperado}`)
     },
   },
 ]

@@ -18,6 +18,7 @@ import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
 import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade, getCalendar, healLibraryFolders } from './monitor'
 import { reconcileDebrid } from './debrid-reconcile'
+import { getAccountStatus, isInCooldown } from './debrid-status'
 import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath, fetchJellyfinPoster } from './library'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
@@ -563,6 +564,25 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
             skip: result.plan.skip.slice(0, 40).map((s) => ({ name: s.name.slice(0, 100), reason: s.reason })),
             skipped_total: result.plan.skip.length,
             reason: result.reason,
+          },
+        })
+      }
+
+      // Estado de la cuenta en el debrid (spec B10): cooldown, para que la UI
+      // pueda avisar en vez de dejar que la app martillee sin explicación.
+      if (api === 'debrid/status') {
+        const settings = getSettings()
+        const force = /[?&]refresh=1/.test(req.url || '')
+        const status = await getAccountStatus({ token: settings.automation_service === 'torbox' ? settings.torbox_token : undefined, force })
+        return sendJson(res, 200, {
+          success: true,
+          data: {
+            service: settings.automation_service,
+            inCooldown: isInCooldown(status),
+            cooldownUntil: status?.cooldownUntil || null,
+            plan: status?.plan ?? null,
+            checkedAt: status?.at ? new Date(status.at).toISOString() : null,
+            error: status?.error || null,
           },
         })
       }

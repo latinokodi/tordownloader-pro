@@ -18,6 +18,7 @@ import { setupSearchEnv } from './python-run'
 import { eventBus } from './event-bus'
 import { healLibrary, type HealResult } from './library-heal'
 import { reconcileDebrid, reconcileDue } from './debrid-reconcile'
+import { getAccountStatus, isInCooldown, cooldownLabel } from './debrid-status'
 import { jellyfinRefresh } from './library'
 
 export interface MonitorStatus {
@@ -224,6 +225,14 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
     return 'grabbed'
   }
 
+  // Debrid en cooldown (spec B10): NO es falta de fuente ni un fallo del
+  // episodio. No se consume intento (sin backoff) y se avisa una vez por ventana:
+  // martillear durante el cooldown lo ALARGA (medido: 03:59 → 08:03 UTC).
+  if (outcome.status === 'cooldown') {
+    logCoolDownOnce(item, outcome.error)
+    return 'waiting'
+  }
+
   // Missed (no source) or failed — schedule the next attempt with backoff.
   const delayMin = nextDelayMinutes(attemptNumber)
   recordAttempt(item.tmdb_id, item.media_type, season, episode, isMovie ? 'movie' : 'episode', profile, delayMin)
@@ -244,6 +253,18 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
     console.debug(`[Monitor] ${label}: aún sin fuente (intento ${attemptNumber}) — próxima ventana en ${delayMin} min`)
   }
   return 'waiting'
+}
+
+/**
+ * Aviso de cooldown, una vez por ventana (no por episodio): el log se llenaba de
+ * "no return a torrent id" episodio tras episodio sin decir la causa real.
+ */
+let lastCooldownLog = 0
+function logCoolDownOnce(item: WatchlistItem, error?: string): void {
+  const now = Date.now()
+  if (now - lastCooldownLog < 10 * 60_000) return
+  lastCooldownLog = now
+  log(`⏸ debrid en cooldown — "${item.title}" y el resto quedan en espera sin gastar reintentos (${error || 'sólo entran releases cacheados'})`)
 }
 
 async function refreshNextEpisode(item: WatchlistItem, detail: any): Promise<void> {
@@ -613,7 +634,8 @@ export function forceCheckItem(itemId: number): boolean {
 // FBI (~180 capítulos) costaba ~20 h.
 const BACKFILL_INTERVAL_MS = 15_000
 let lastQueueLog = 0
-
+/** Última búsqueda de backfill hecha estando el debrid en cooldown (ritmo lento). */
+let lastCooldownBackfill = 0
 /** ¿Queda algún episodio ya emitido sin descargar? (para el resumen) */
 async function pendingBackfillCount(items: WatchlistItem[]): Promise<number> {
   let total = 0
@@ -649,6 +671,20 @@ export async function runBackfillTick(): Promise<{ grabbed: number; waiting: num
   }
   backfillBusy = true
   try {
+    // Cooldown del debrid (spec B10): buscar en cada ventana de 15 s no sirve de
+    // nada mientras dure (sólo entrarían releases cacheados, y de esos se encarga
+    // la reconciliación). Se baja el ritmo a una búsqueda cada 10 min y sin gastar
+    // reintentos. Medido: martillear alargó el cooldown de 03:59 a 08:03 UTC.
+    const account = await getAccountStatus({ token: settings.automation_service === 'torbox' ? settings.torbox_token : undefined })
+    if (isInCooldown(account)) {
+      summary.queue = countPipelineDownloads()
+      if (Date.now() - lastCooldownBackfill > 10 * 60_000) {
+        lastCooldownBackfill = Date.now()
+        console.debug(`[Backfill] debrid en cooldown hasta ${cooldownLabel(account)} — se buscan sólo releases cacheados, con ritmo lento`)
+      } else {
+        return summary
+      }
+    }
     const maxConcurrent = Math.max(1, Number(settings.max_concurrent_downloads) || 3)
     let depth = countPipelineDownloads()
     if (depth >= maxConcurrent) {
