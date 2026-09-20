@@ -390,7 +390,7 @@ function forgetHistoryRows(watchlistId: number, opts: { season?: number | null; 
   }
 }
 
-async function jellyfinRefresh(): Promise<{ sent: boolean; error?: string }> {
+export async function jellyfinRefresh(): Promise<{ sent: boolean; error?: string }> {
   const settings: Settings = getSettings()
   const url = (settings.jellyfin_url || '').trim().replace(/\/+$/, '')
   const key = (settings.jellyfin_api_key || '').trim()

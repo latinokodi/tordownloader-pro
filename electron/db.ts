@@ -149,6 +149,7 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN jackett_api_key VARCHAR DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN last_monitor_run VARCHAR DEFAULT ''`,
     `ALTER TABLE downloads ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
+    `ALTER TABLE downloads ADD COLUMN expected_runtime_min REAL DEFAULT NULL`,
     `ALTER TABLE watchlist ADD COLUMN backfill VARCHAR DEFAULT 'new'`,
     `ALTER TABLE settings ADD COLUMN max_grab_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE settings ADD COLUMN max_movie_size_gb INTEGER DEFAULT 0`,
@@ -228,6 +229,8 @@ export interface Download {
   type: 'movie' | 'series' | '';
   created_at: string;
   dest_folder?: string | null;
+  /** Duración esperada del episodio/película (min) — la usa el preflight. */
+  expected_runtime_min?: number | null;
 }
 
 export interface WatchlistItem {
@@ -396,6 +399,19 @@ export function updateDownload(torboxId: string, data: Partial<Download>): void 
 
 export function deleteDownload(torboxId: string): void {
   db.prepare('DELETE FROM downloads WHERE torbox_id = ?').run(torboxId);
+}
+
+/**
+ * Libera las filas que quedaron en local_status 'preflight': el grab las deja
+ * así mientras valida el release (¿tiene video? ¿dura lo esperado?) y las pasa
+ * a 'pending' al terminar. Si el proceso se reinicia en medio, la descarga se
+ * quedaría parada para siempre — al arrancar se liberan.
+ */
+export function releaseStalledPreflights(): number {
+  try {
+    const info = db.prepare("UPDATE downloads SET local_status = 'pending' WHERE local_status = 'preflight'").run()
+    return Number((info as any)?.changes) || 0
+  } catch { return 0 }
 }
 
 export function getDB(): DatabaseType {

@@ -141,35 +141,156 @@ function normalizeName(value: string): string {
     .replace(/[^a-z0-9]/g, '')
 }
 
+/** Año de 4 dígitos entre paréntesis (o suelto) de un nombre de carpeta. */
+function yearOfFolderName(value: string): number {
+  const m = String(value || '').match(/\b(19|20)\d{2}\b/)
+  return m ? parseInt(m[0], 10) : 0
+}
+
+const LEADING_ARTICLES = new Set(['el', 'la', 'los', 'las', 'un', 'una', 'the', 'a', 'an'])
+
+/** Tokens del título de una carpeta: sin acentos/puntuación/año y sin artículos. */
+function looseTokens(value: string): string[] {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0 && !LEADING_ARTICLES.has(t) && !/^(19|20)\d{2}$/.test(t))
+}
+
 /**
- * Busca una carpeta de título existente que corresponda a cualquiera de los
- * candidatos: coincidencia exacta (case-insensitive) con "Título (Año)" o
- * "Título", y si no, coincidencia NORMALIZADA (ignora acentos/puntuación, así
- * "Star Trek: Strange New Worlds" == "Star Trek_ Strange New Worlds").
- * Nunca crea una carpeta nueva si el título ya vive en la biblioteca.
+ * ¿Dos nombres de carpeta son el MISMO título? El título que publica TMDB
+ * cambia con el tiempo ("Operativo Lioness" -> "Lioness", "El tigre y el dragón"
+ * -> "Tigre y dragón") y comparar solo por igualdad de cadena creaba carpetas
+ * paralelas para la misma serie/película (la biblioteca se partía en dos y
+ * Jellyfin mostraba el título duplicado). Reglas:
+ *   - años distintos (ambos presentes) ⇒ NO son el mismo título (homónimas:
+ *     Dark Matter 2015 vs 2024).
+ *   - mismos tokens (ignorando artículos y orden) ⇒ sí.
+ *   - un título es subconjunto del otro ("Lioness" ⊂ "Operativo Lioness") ⇒ sí,
+ *     pero solo si ambos traen año (sin año, el riesgo de fusionar dos cosas
+ *     distintas es mayor que el de una carpeta duplicada).
  */
-function findExistingTitleFolder(root: string, candidates: string[], year?: number): string | null {
+function sameShowFolderName(a: string, b: string): boolean {
+  const ya = yearOfFolderName(a)
+  const yb = yearOfFolderName(b)
+  if (ya && yb && ya !== yb) return false
+  const sa = [...new Set(looseTokens(a))]
+  const sb = [...new Set(looseTokens(b))]
+  if (sa.length === 0 || sb.length === 0) return false
+  const [small, big] = sa.length <= sb.length ? [sa, sb] : [sb, sa]
+  const covered = small.filter((t) => big.includes(t)).length
+  if (covered !== small.length) return false
+  if (small.length === big.length) return true
+  return Boolean(ya && yb)
+}
+
+/**
+ * ¿Estos dos nombres de carpeta son el mismo título? Además del año y los
+ * tokens, acepta la comparación normalizada (acentos/puntuación) para casos
+ * como "Star Trek: Strange New Worlds" vs "Star Trek_ Strange New Worlds".
+ */
+export function sameTitleFolder(a: string, b: string): boolean {
+  const na = normalizeName(a)
+  const nb = normalizeName(b)
+  if (na && nb && na === nb) return true
+  return sameShowFolderName(a, b)
+}
+
+/** Nº de videos dentro de una carpeta de título (para elegir la "de verdad"). */
+function folderMediaCount(root: string, folderName: string, kind: 'movie' | 'series'): number {
+  const dir = path.join(root, folderName)
+  const countIn = (d: string): number => {
+    try {
+      return fs.readdirSync(d, { withFileTypes: true })
+        .filter((e) => e.isFile() && /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i.test(e.name)).length
+    } catch { return 0 }
+  }
+  try {
+    if (kind === 'movie') return countIn(dir)
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .reduce((acc, e) => acc + countIn(path.join(dir, e.name)), 0)
+  } catch { return 0 }
+}
+
+/**
+ * Nivel de coincidencia con los candidatos:
+ *   2 = es el MISMO título (igual, igual salvo acentos/puntuación o mismos
+ *       tokens con el año compatible)
+ *   1 = un título es subconjunto del otro con el año presente ("Lioness" ⊂
+ *       "Operativo Lioness")
+ *   0 = no corresponde
+ * El nivel decide antes que nada; el número de archivos solo desempata entre
+ * carpetas del MISMO título (así la carpeta huérfana deja de recibir contenido
+ * aunque su nombre sea el que TMDB publica hoy).
+ */
+function folderMatchLevel(dirName: string, candidates: string[], year?: number): number {
+  let best = 0
+  for (const raw of candidates) {
+    const cand = safeSegment(String(raw || '').trim())
+    if (!cand) continue
+    const withYear = year && !yearOfFolderName(cand) ? `${cand} (${year})` : cand
+    if (dirName.toLowerCase() === cand.toLowerCase()) { best = Math.max(best, 2); continue }
+    if (year && dirName.toLowerCase() === safeSegment(`${cand} (${year})`).toLowerCase()) { best = Math.max(best, 2); continue }
+    if (normalizeName(dirName) === normalizeName(withYear) || normalizeName(dirName) === normalizeName(cand)) { best = Math.max(best, 2); continue }
+    if (!sameShowFolderName(dirName, withYear)) continue
+    // Subconjunto ("Lioness" ⊂ "Operativo Lioness"): solo vale con años.
+    const small = Math.min(new Set(looseTokens(dirName)).size, new Set(looseTokens(withYear)).size)
+    const big = Math.max(new Set(looseTokens(dirName)).size, new Set(looseTokens(withYear)).size)
+    best = Math.max(best, small === big ? 2 : 1)
+  }
+  return best
+}
+
+/**
+ * Qué tan literal es la coincidencia (desempate final dentro del mismo nivel):
+ * 100 = "Título (Año)" exacto · 95 = nombre exacto · 90 = igual salvo
+ * acentos/puntuación · 70 = mismos tokens (artículos aparte).
+ */
+function folderExactness(dirName: string, candidates: string[], year?: number): number {
+  let best = 0
+  for (const raw of candidates) {
+    const cand = safeSegment(String(raw || '').trim())
+    if (!cand) continue
+    const withYear = year && !yearOfFolderName(cand) ? `${cand} (${year})` : cand
+    if (year && dirName.toLowerCase() === safeSegment(`${cand} (${year})`).toLowerCase()) best = Math.max(best, 100)
+    if (dirName.toLowerCase() === cand.toLowerCase()) best = Math.max(best, 95)
+    if (normalizeName(dirName) === normalizeName(withYear) || normalizeName(dirName) === normalizeName(cand)) best = Math.max(best, 90)
+    if (sameShowFolderName(dirName, withYear)) best = Math.max(best, 70)
+  }
+  return best
+}
+
+/**
+ * Busca la carpeta de título EXISTENTE que corresponde a cualquiera de los
+ * candidatos. Nunca crea una carpeta nueva si el título ya vive en la
+ * biblioteca, y cuando hay varias candidatas (una carpeta duplicada por un
+ * cambio de título) se queda con la que más episodios/películas tiene — la de
+ * verdad — para que el duplicado deje de recibir contenido.
+ */
+function findExistingTitleFolder(root: string, candidates: string[], year?: number, kind: 'movie' | 'series' = 'movie'): string | null {
   let dirs: string[] = []
   try {
     dirs = fs.readdirSync(root, { withFileTypes: true })
       .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
       .map((e) => e.name)
   } catch { return null }
-  const uniq = [...new Set(candidates.map((c) => c.trim()).filter(Boolean))]
-  for (const c of uniq) {
-    for (const name of year ? [`${c} (${year})`, c] : [c]) {
-      const t = safeSegment(name).toLowerCase()
-      const hit = dirs.find((d) => d.toLowerCase() === t)
-      if (hit) return hit
-    }
-  }
-  const norms = new Set<string>()
-  for (const c of uniq) {
-    norms.add(normalizeName(c))
-    if (year) norms.add(normalizeName(`${c} (${year})`))
-  }
-  const hit2 = dirs.find((d) => norms.has(normalizeName(d)))
-  return hit2 || null
+  const uniq = [...new Set(candidates.map((c) => String(c || '').trim()).filter(Boolean))]
+  if (uniq.length === 0) return null
+  const scored = dirs
+    .map((d) => ({ name: d, level: folderMatchLevel(d, uniq, year), exact: folderExactness(d, uniq, year), media: 0 }))
+    .filter((x) => x.level > 0)
+  if (scored.length === 0) return null
+  // Empates por nivel se resuelven por contenido real en disco.
+  for (const s of scored) s.media = folderMediaCount(root, s.name, kind)
+  scored.sort((a, b) => {
+    if (b.level !== a.level) return b.level - a.level
+    if (b.media !== a.media) return b.media - a.media
+    return b.exact - a.exact
+  })
+  return scored[0].name
 }
 
 /** Reutiliza la carpeta de temporada existente (Season 4 == Season 04). */
@@ -228,7 +349,7 @@ export async function computeDestination(
   settings: { destination_folder: string; movies_folder: string; series_folder: string; tmdb_api_key: string },
   torrentName: string,
   type: 'movie' | 'series' | '',
-  opts: { tmdbId?: number; extraTitles?: string[]; titleOverride?: string } = {},
+  opts: { tmdbId?: number; extraTitles?: string[]; titleOverride?: string; year?: number } = {},
 ): Promise<{ root: string; folder: string; season: number | undefined }> {
   const kind = type === 'series' ? 'series' : 'movie'
   const parsed = parseReleaseName(torrentName)
@@ -240,8 +361,12 @@ export async function computeDestination(
     meta = null
   }
 
-  const year = meta?.year || parsed.year
   const tmdbId = opts.tmdbId || meta?.id
+  // El año del objetivo manda. El de la búsqueda por nombre solo se acepta si
+  // resolvió al MISMO título: en homónimas ("Dark Matter" 2015/2024) la
+  // búsqueda puede devolver la otra y arrastrar los episodios a su carpeta.
+  const metaYearFiable = meta?.year && (!tmdbId || !meta?.id || meta.id === tmdbId) ? meta.year : undefined
+  const year = opts.year || metaYearFiable || parsed.year
 
   const root =
     kind === 'series'
@@ -254,16 +379,14 @@ export async function computeDestination(
 
   const saved = tmdbId ? getMediaFolder(tmdbId, kind) : ''
 
-  // 1) Carpeta ya memorizada para este título → reutilizarla tal cual.
-  if (saved) {
-    const hit = findExistingTitleFolder(root, [saved])
-    if (hit) return finish(root, hit, kind, parsed, tmdbId, saved)
-  }
-
   // 2) Candidatos: título localizado (es-ES), título original, títulos extra
-  //    que vengan del caller (release/watchers) y, si hace falta, títulos
-  //    alternativos de TMDB (ES/MX/US…). Nunca crear carpeta nueva si ya vive.
+  //    que vengan del caller (release/watchers), la carpeta ya memorizada y, si
+  //    hace falta, títulos alternativos de TMDB (ES/MX/US…). La búsqueda es
+  //    tolerante (artículos, orden, cambios de título) y, si hay dos carpetas
+  //    del mismo título, se queda con la que más contenido tiene — nunca se
+  //    crea una carpeta nueva si el título ya vive en la biblioteca.
   const candidates = [
+    ...(saved ? [saved] : []),
     ...(opts.titleOverride ? [opts.titleOverride] : []),
     ...(opts.extraTitles || []),
     meta?.title,
@@ -271,16 +394,18 @@ export async function computeDestination(
     parsed.title,
   ].filter(Boolean) as string[]
 
-  let titleFolder = findExistingTitleFolder(root, candidates, year)
+  let titleFolder = findExistingTitleFolder(root, candidates, year, kind)
   if (!titleFolder && tmdbId) {
     const alts = await tmdbAltTitles(tmdbId, kind)
-    if (alts.length) titleFolder = findExistingTitleFolder(root, alts, year)
+    if (alts.length) titleFolder = findExistingTitleFolder(root, [...alts, ...candidates], year, kind)
   }
   if (!titleFolder) {
-    const base = candidates[0] || parsed.title || torrentName
+    const base = candidates.filter((c) => c !== saved)[0] || parsed.title || torrentName
     titleFolder = safeSegment(year ? `${base} (${year})` : base)
   }
-  return finish(root, titleFolder, kind, parsed, tmdbId, saved ? undefined : titleFolder)
+  // La carpeta elegida (aunque viniera memorizada con otro nombre) queda
+  // memorizada: si el título de TMDB cambió, la fila se corrige sola.
+  return finish(root, titleFolder, kind, parsed, tmdbId, titleFolder)
 }
 
 /** Resuelve la temporada y memoriza la carpeta elegida para el título. */

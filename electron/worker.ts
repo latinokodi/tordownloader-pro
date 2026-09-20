@@ -1,6 +1,6 @@
 import { TorboxAPI } from './torbox';
 import { RealDebridAPI } from './realdebrid';
-import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId } from './db';
+import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, releaseStalledPreflights } from './db';
 import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId, findWatchlistItem } from './watchlist';
 import { tmdbDetail } from './tmdb';
 import { addBadRelease } from './db';
@@ -146,6 +146,10 @@ export function startWorker(mainWindow: BrowserWindow | null) {
 
   // ── Resume interrupted downloads on startup ──────────
   try {
+    // Filas que se quedaron en 'preflight' (validación previa interrumpida por
+    // un reinicio del servicio): se liberan para que la descarga continúe.
+    const freed = releaseStalledPreflights()
+    if (freed > 0) console.log(`[Worker] ${freed} descarga(s) liberadas de la validación previa`)
     const allDownloads = getDownloads()
     const completedStates = ['completed', 'cached', 'finished']
     for (const dl of allDownloads) {
@@ -498,7 +502,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
     console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
 
     // ── Subtítulos automáticos (spa + en) ──────────────
-    await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder, downloadedVideoPaths);
+    await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder, downloadedVideoPaths, tid);
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
     try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
     
@@ -521,11 +525,29 @@ const VIDEO_EXT_RE = /\.(mkv|mp4|avi|m4v|mov|wmv)$/i;
 const EP_RE = /[sS](\d{1,2})[eE](\d{1,2})/;
 
 /**
+ * imdb_id del título grabado, leído de la fila del grab (que lo trae del
+ * watchlist) y, si falta, de TMDB. Cadena vacía si no se puede saber: entonces
+ * subtitles.py cae a la heurística por título, como antes.
+ */
+async function knownImdbId(torboxId: string): Promise<string> {
+  try {
+    const row = getGrabByTorboxId(torboxId);
+    if (!row || !row.tmdb_id) return '';
+    const item = findWatchlistItem(row.tmdb_id, row.media_type);
+    if (item && item.imdb_id) return item.imdb_id;
+    const detail = await tmdbDetail(row.tmdb_id, row.media_type);
+    return detail?.imdb_id || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Tras completar una descarga, busca el/los video(s) en la carpeta destino
  * y descarga subtítulos (español + inglés) vía electron/subtitles.py.
  * Fire-and-forget: errores solo se loguean, nunca fallan la descarga.
  */
-async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string, onlyFiles?: string[]) {
+async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string, onlyFiles?: string[], torboxId?: string) {
   try {
     const py = process.env.TDP_PYTHON || 'python3';
     const script = path.join(__dirname, '..', 'electron', 'subtitles.py');
@@ -569,9 +591,16 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
     title = tokens.join(' ').trim();
     if (!title) title = name;
 
+    // El imdb_id REAL (el que la app ya conoce por la fila del grab) manda
+    // sobre la heurística del nombre: resolverlo por título fallaba con los
+    // nombres de release ("Dark Matter MeGusta UIndex org") y a veces acertaba
+    // en OTRA serie homónima (subtítulos de la serie equivocada).
+    const imdbId = torboxId ? await knownImdbId(torboxId) : ''
+
     for (const v of videos) {
       const videoPath = path.join(destFolder, v);
       const args = ['electron/subtitles.py', 'fetch', '--title', title, '--type', isSeries ? 'series' : 'movie', '--dest', videoPath];
+      if (imdbId) args.push('--imdb', imdbId);
       if (isSeries && epMatch) {
         args.push('--season', epMatch[1], '--episode', epMatch[2]);
       }
@@ -726,7 +755,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
     console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
 
     // ── Subtítulos automáticos (spa + en) ──────────────
-    await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder, downloadedVideoPaths);
+    await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder, downloadedVideoPaths, tid);
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
     try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
 

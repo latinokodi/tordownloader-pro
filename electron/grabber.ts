@@ -4,7 +4,7 @@
 // the winner to the debrid service and snapshot the exact destination folder
 // on the download row so the worker routes it without re-parsing.
 import path from 'path'
-import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, type Settings, type DebridService, type LanguageProfile } from './db'
+import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, deleteDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, addBadRelease, type Settings, type DebridService, type LanguageProfile } from './db'
 import { recordGrab } from './watchlist'
 import { runPythonLines, setupSearchEnv } from './python-run'
 import { computeDestination, safeSegment, seriesNameMatches, releaseYear } from './media-layout'
@@ -12,8 +12,12 @@ import { TorboxAPI } from './torbox'
 import { RealDebridAPI } from './realdebrid'
 import { eventBus } from './event-bus'
 import { tmdbDetail } from './tmdb'
+import { isVideoName, probeAddedTorrent, type RemoteFile } from './preflight'
 
 export type GrabLanguage = 'latino' | 'english'
+
+/** Cuántos candidatos se validan por fase antes de rendirse (ver preflight). */
+const MAX_CANDIDATES_PER_PHASE = 3
 
 export interface GrabTarget {
   watchlist_id: number
@@ -29,6 +33,12 @@ export interface GrabTarget {
   language_profile: LanguageProfile
   /** 'upgrade' = solo fase latino, para reemplazo manual EN → latino. */
   mode?: 'upgrade'
+  /**
+   * Duración esperada (min). Se usa para validar el release ANTES de bajar el
+   * archivo: un episodio/película homónima dura otra cosa (Dark Matter 2015 =
+   * 43 min vs 2024 = 53 min). Si falta, el preflight no bloquea nada.
+   */
+  runtime_min?: number
 }
 
 export interface GrabResultItem {
@@ -40,6 +50,10 @@ export interface GrabResultItem {
   indexer: string
   info_hash: string | null
   latino: boolean
+  /** Presente en la caché del debrid (bajada instantánea, sin depender de seeds). */
+  cached?: boolean
+  /** Bytes del archivo de video real según la caché (mejor dato que el del índice). */
+  videoBytes?: number
 }
 
 export interface GrabOutcome {
@@ -175,6 +189,9 @@ function scoreResult(r: GrabResultItem, target: GrabTarget): number {
   // Reject releases whose title suggests non-EN/non-ES audio (cyrillic, CJK,
   // arabic scripts) — those are dubbed tracks, never what a grab wants.
   if (/[\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF\u0600-\u06FF]/.test(lower)) score -= 350
+  // Ya está en la caché del debrid: se puede bajar al instante y no depende de
+  // seeds (los releases latino suelen tener 0). Es un plus, no un requisito.
+  if (r.cached) score += 25
   return score
 }
 
@@ -201,6 +218,153 @@ function dedupeResults(results: GrabResultItem[]): GrabResultItem[] {
     if (!prev || numSeeders(r) > numSeeders(prev)) seen.set(key, r)
   }
   return [...seen.values()]
+}
+
+/** Candidatos ordenados por puntuación (los inválidos quedan fuera). */
+function rankCandidates(results: GrabResultItem[], target: GrabTarget): GrabResultItem[] {
+  return results
+    .map((r) => ({ r, score: scoreResult(r, target) }))
+    .filter((x) => x.score >= -500)
+    .sort((a, b) => (b.score - a.score) || (numSeeders(b.r) - numSeeders(a.r)))
+    .map((x) => x.r)
+}
+
+/**
+ * Valida los candidatos contra la caché de TorBox (una sola llamada, cero
+ * tráfico de descarga):
+ *  - descarta los torrents que NO traen ningún video (falsos rellenos de
+ *    .zipx/.rar/.exe/.url, típicos de algunos grupos en los indexers) y los
+ *    manda a la lista negra: antes se añadían, se esperaba la descarga y sólo
+ *    al final se descubría que no había episodio.
+ *  - marca los que ya están en caché y el tamaño REAL de su video.
+ * Si la caché no se puede consultar, devuelve los resultados intactos.
+ */
+async function annotateWithCache(settings: Settings, results: GrabResultItem[]): Promise<GrabResultItem[]> {
+  if (results.length === 0) return results
+  if (!serviceOrder(settings).includes('torbox')) return results
+  const hashes = [...new Set(results.map((r) => String(r.info_hash || '').toLowerCase()).filter((h) => /^[a-f0-9]{40}$/.test(h)))]
+  if (hashes.length === 0) return results
+  const tb = new TorboxAPI(settings.torbox_token)
+  const byHash = new Map<string, any>()
+  for (let i = 0; i < hashes.length; i += 40) {
+    const chunk = hashes.slice(i, i + 40)
+    try {
+      const res = await tb.checkCached(chunk)
+      for (const item of (Array.isArray(res?.data) ? res.data : [])) {
+        const h = String(item?.hash || '').toLowerCase()
+        if (h) byHash.set(h, item)
+      }
+    } catch (e: any) {
+      console.warn(`[grab] caché no consultable (${e.message}) — preflight de caché omitido`)
+      return results
+    }
+  }
+  const out: GrabResultItem[] = []
+  let junk = 0
+  for (const r of results) {
+    const h = String(r.info_hash || '').toLowerCase()
+    const info = h ? byHash.get(h) : undefined
+    if (!info) { out.push(r); continue }
+    const files: RemoteFile[] = (info.files || []).map((f: any) => ({
+      id: Number(f?.id),
+      name: String(f?.name || ''),
+      size: Number(f?.size) || 0,
+    }))
+    const videos = files.filter((f) => isVideoName(f.name))
+    if (files.length > 0 && videos.length === 0) {
+      junk += 1
+      addBadRelease(h, 'torrent sin archivo de video (falso: sólo .zipx/.rar/.exe/.url)', r.title)
+      console.log(`[grab] ✗ descartado antes de añadirlo (sólo archivos no-video): ${r.title} [${r.indexer}]`)
+      continue
+    }
+    const video = videos.length ? videos.reduce((a, b) => (b.size > a.size ? b : a), videos[0]) : null
+    out.push({ ...r, cached: true, videoBytes: video ? video.size : undefined })
+  }
+  if (junk > 0) console.log(`[grab] ${junk} release(s) sin video descartados por la caché`)
+  return out
+}
+
+/**
+ * Preflight del release YA añadido al debrid, antes de que el worker baje un
+ * solo byte: ¿trae video? ¿su duración corresponde al episodio/película? Un
+ * "no" aquí evita la descarga completa del archivo y el borrado posterior.
+ * Ante cualquier duda (sin runtime, sin enlace, contenedor sin duración en la
+ * cabecera) devuelve ok=true: nunca bloquea por falta de datos.
+ */
+async function preflightAdded(
+  settings: Settings,
+  service: DebridService,
+  torrentId: string,
+  target: GrabTarget,
+): Promise<{ ok: boolean; reason?: string; durationMin?: number | null; inconclusive?: boolean }> {
+  const expected = Number(target.runtime_min || 0) || null
+  const kind: 'movie' | 'episode' = target.kind === 'movie' ? 'movie' : 'episode'
+  try {
+    if (service === 'torbox') {
+      const tb = new TorboxAPI(settings.torbox_token)
+      return await probeAddedTorrent({
+        kind,
+        expectedMin: expected,
+        getFiles: async () => {
+          const info = await tb.getTorrentInfo(torrentId)
+          const data = info?.data
+          const raw = Array.isArray(data) ? data[0] : data
+          return (raw?.files || []).map((f: any) => ({
+            id: Number(f?.id),
+            name: String(f?.name || ''),
+            size: Number(f?.size) || 0,
+          }))
+        },
+        getLink: async (fileId) => {
+          const link = await tb.getDownloadLink(torrentId, fileId)
+          return link && link.success !== false && typeof link.data === 'string' ? link.data : null
+        },
+      })
+    }
+    // Real-Debrid: mismo sondeo usando unrestrict sobre el enlace del archivo.
+    const rd = new RealDebridAPI(settings.realdebrid_token)
+    let links: string[] = []
+    return await probeAddedTorrent({
+      kind,
+      expectedMin: expected,
+      getFiles: async () => {
+        const info = await rd.getTorrentInfo(torrentId)
+        const data = info?.data || {}
+        links = Array.isArray(data.links) ? data.links : []
+        return (data.files || []).map((f: any, idx: number) => ({
+          id: Number(f?.id ?? idx + 1),
+          name: String(f?.path || f?.name || '').replace(/^\//, ''),
+          size: Number(f?.bytes) || 0,
+        }))
+      },
+      getLink: async (fileId) => {
+        const idx = Number(fileId) - 1
+        const raw = links[idx] || (links.length === 1 ? links[0] : null)
+        if (!raw) return null
+        const un = await rd.unrestrictLink(raw)
+        return un && un.success !== false && typeof un.data?.download === 'string' ? un.data.download : null
+      },
+    })
+  } catch (e: any) {
+    console.warn(`[grab] preflight no concluyente (${e.message})`)
+    return { ok: true, inconclusive: true }
+  }
+}
+
+/** Descarta un candidato ya añadido: borra el torrent remoto y la fila local. */
+async function abortAddedCandidate(settings: Settings, service: DebridService, torrentId: string, wasNew: boolean): Promise<void> {
+  try {
+    if (wasNew) {
+      if (service === 'torbox') await new TorboxAPI(settings.torbox_token).controlTorrent(torrentId, 'delete')
+      else await new RealDebridAPI(settings.realdebrid_token).deleteTorrent(torrentId)
+    }
+  } catch (e: any) {
+    console.warn(`[grab] no se pudo borrar el torrent rechazado en ${service}: ${e.message}`)
+  }
+  try {
+    deleteDownload(torrentId)
+    eventBus.emit('downloads-updated')
+  } catch { /* ignore */ }
 }
 
 /** Estado de la web de Cinecalidad: ¿el latino ya está publicado? */
@@ -328,7 +492,10 @@ export async function findLatinoForUpgrade(target: GrabTarget): Promise<GrabResu
   if (maxBytes && results.some((r) => exceedsMaxBytes(r, maxBytes))) {
     results = results.filter((r) => !exceedsMaxBytes(r, maxBytes))
   }
-  return chooseBest(results, target)
+  // Misma validación de caché que en el grab: no ofrecer como "versión latina
+  // disponible" un torrent que en realidad no trae ningún video.
+  results = await annotateWithCache(settings, results)
+  return rankCandidates(results, target)[0] || null
 }
 
 function serviceOrder(settings: Settings): DebridService[] {
@@ -350,10 +517,18 @@ async function addToService(
   result: GrabResultItem,
   type: 'movie' | 'series',
   destFolder: string,
-): Promise<{ ok: boolean; torboxId?: string; error?: string }> {
+  opts: { runtimeMin?: number | null; deferred?: boolean } = {},
+): Promise<{ ok: boolean; torboxId?: string; error?: string; wasNew?: boolean }> {
   const hash = result.info_hash || hashFromLink(result.link)
   const isMagnet = Boolean(hash && /^magnet:/.test(result.link)) || Boolean(hash && !/^https?:/i.test(result.link) && result.link.startsWith('magnet'))
   const url = result.link || (hash ? `magnet:?xt=urn:btih:${hash}` : '')
+  // `deferred`: la fila nace en local_status 'preflight' para que el worker no
+  // empiece a bajar hasta que el preflight (video/duración) la libere. Sin eso,
+  // un tick del worker podía lanzar la descarga del archivo equivocado antes de
+  // validarlo.
+  const extra: Record<string, unknown> = {}
+  if (opts.runtimeMin && Number.isFinite(Number(opts.runtimeMin))) extra.expected_runtime_min = Number(opts.runtimeMin)
+  if (opts.deferred) extra.local_status = 'preflight'
   try {
     if (service === 'torbox') {
       const tb = new TorboxAPI(settings.torbox_token)
@@ -364,10 +539,10 @@ async function addToService(
       const { id } = TorboxAPI.torrentIdentity(res.data)
       if (!id) return { ok: false, error: 'TorBox did not return a torrent id' }
       const existing = getDownloadByTorboxId(id)
-      if (existing) updateDownload(id, { name: result.title.slice(0, 300), service: 'torbox', type, dest_folder: destFolder })
-      else addDownload({ torbox_id: id, name: result.title.slice(0, 300), status: 'pending', progress: 0, service: 'torbox', type, dest_folder: destFolder })
+      if (existing) updateDownload(id, { name: result.title.slice(0, 300), service: 'torbox', type, dest_folder: destFolder, ...extra })
+      else addDownload({ torbox_id: id, name: result.title.slice(0, 300), status: 'pending', progress: 0, service: 'torbox', type, dest_folder: destFolder, ...extra })
       eventBus.emit('downloads-updated')
-      return { ok: true, torboxId: id }
+      return { ok: true, torboxId: id, wasNew: !existing }
     }
     const rd = new RealDebridAPI(settings.realdebrid_token)
     const res = hash && (isMagnet || !/^https?:\/\//i.test(result.link))
@@ -377,10 +552,10 @@ async function addToService(
     const { id } = RealDebridAPI.torrentIdentity(res.data)
     if (!id) return { ok: false, error: 'Real-Debrid did not return a torrent id' }
     const existing = getDownloadByTorboxId(id)
-    if (existing) updateDownload(id, { name: result.title.slice(0, 300), service: 'realdebrid', type, dest_folder: destFolder, status: 'waiting_files_selection' })
-    else addDownload({ torbox_id: id, name: result.title.slice(0, 300), status: 'waiting_files_selection', progress: 0, service: 'realdebrid', type, dest_folder: destFolder })
+    if (existing) updateDownload(id, { name: result.title.slice(0, 300), service: 'realdebrid', type, dest_folder: destFolder, ...extra })
+    else addDownload({ torbox_id: id, name: result.title.slice(0, 300), status: 'waiting_files_selection', progress: 0, service: 'realdebrid', type, dest_folder: destFolder, ...extra })
     eventBus.emit('downloads-updated')
-    return { ok: true, torboxId: id }
+    return { ok: true, torboxId: id, wasNew: !existing }
   } catch (e: any) {
     return { ok: false, error: e?.message || String(e) }
   }
@@ -398,6 +573,7 @@ async function computeDestFolder(settings: Settings, target: GrabTarget): Promis
     const { root, folder } = await computeDestination(settings, releaseName, type, {
       tmdbId: target.tmdb_id,
       extraTitles: [target.title, target.original_title].filter(Boolean) as string[],
+      year: Number(target.year) || undefined,
     })
     if (!root) return null
     return path.join(root, ...folder.split('/').map(safeSegment))
@@ -521,9 +697,11 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
         console.log(`[grab] ${phase}: ${before - results.length} resultado(s) descartados por lista negra`)
       }
     }
+    // Preflight de caché: descarta lo que no trae video y marca lo cacheado.
+    results = await annotateWithCache(settings, results)
+    if (results.length === 0) continue
     if (phase === 'latino') base.latinoResults = results.length
     else base.englishResults = results.length
-    if (results.length === 0) continue
 
     // Tope de tamaño por tipo (configurable): descarta releases gigantes; si
     // TODAS exceden el tope, la fase se omite y se reintenta con backoff.
@@ -536,44 +714,84 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
       results = kept
     }
 
-    const best = chooseBest(results, target)
-    if (best) console.log(`[grab] elegido: ${best.title} (${best.size}) [${best.indexer}]`)
-    if (!best) continue
     const type: 'movie' | 'series' = target.kind === 'movie' ? 'movie' : 'series'
-    for (const svc of services) {
-      const added = await addToService(settings, svc, best, type, destFolder)
-      if (added.ok && added.torboxId) {
-        base.ok = true
-        base.status = 'grabbed'
-        base.language = phase === 'latino' ? 'latino' : 'english'
-        base.source = best.indexer || (phase === 'latino' ? 'latino' : 'jackett')
-        base.service = svc
-        base.torbox_id = added.torboxId
-        base.title = best.title.slice(0, 300)
-        try {
-          recordGrab({
-            watchlist_id: target.watchlist_id,
-            tmdb_id: target.tmdb_id,
-            media_type: target.media_type,
-            season: target.kind === 'episode' ? target.season ?? null : null,
-            episode: target.kind === 'episode' ? target.episode ?? null : null,
-            kind: target.kind === 'movie' ? 'movie' : 'episode',
-            title: best.title,
-            language: phase === 'latino' ? 'latino' : 'english',
-            source: best.indexer || '',
-            status: 'grabbed',
-            torbox_id: added.torboxId,
-            info_hash: best.info_hash || hashFromLink(best.link) || '',
-            dest_folder: destFolder,
-          })
-        } catch (e: any) {
-          console.error('[grab] history write failed:', e.message)
+    const candidates = rankCandidates(results, target).slice(0, MAX_CANDIDATES_PER_PHASE)
+    if (candidates.length === 0) {
+      console.debug(`[grab] ${phase}: ${results.length} resultado(s) pero ninguno válido para el objetivo`)
+      continue
+    }
+    console.log(`[grab] ${phase}: ${candidates.length} candidato(s) a validar — primero: ${candidates[0].title} (${candidates[0].size}) [${candidates[0].indexer}]${candidates[0].cached ? ' (en caché)' : ''}`)
+
+    // Se prueban los candidatos en orden: si uno se añade pero el preflight lo
+    // rechaza (sin video, duración de otra serie), se descarta, se manda a la
+    // lista negra y se pasa al siguiente EN LA MISMA PASADA — sin esperar al
+    // reintento con backoff del monitor.
+    for (const candidate of candidates) {
+      let addedVia: DebridService | null = null
+      let addedTorboxId = ''
+      for (const svc of services) {
+        const added = await addToService(settings, svc, candidate, type, destFolder, {
+          runtimeMin: target.runtime_min,
+          deferred: true,
+        })
+        if (!added.ok || !added.torboxId) {
+          base.status = 'error'
+          base.error = added.error || `Failed to add via ${svc}`
+          continue
         }
-        console.log(`[grab] ✓ ${target.media_type} "${target.title}"${target.kind === 'episode' ? ` S${target.season}E${target.episode}` : ''} → ${phase} (${best.indexer}) via ${svc} → ${destFolder}`)
-        return base
+        const check = await preflightAdded(settings, svc, added.torboxId, target)
+        if (!check.ok) {
+          const reason = String(check.reason || 'release descartado en la validación previa')
+          console.warn(`[grab] ✗ ${candidate.title} [${candidate.indexer}]: ${reason}`)
+          if (candidate.info_hash || candidate.title) addBadRelease(candidate.info_hash || '', reason, candidate.title)
+          await abortAddedCandidate(settings, svc, added.torboxId, added.wasNew !== false)
+          base.status = 'no_source'
+          base.error = reason
+          continue
+        }
+        // Validado: se libera la fila para que el worker descargue.
+        try {
+          updateDownload(added.torboxId, { local_status: 'pending' })
+          eventBus.emit('downloads-updated')
+        } catch { /* la fila se libera igualmente en el siguiente arranque */ }
+        if (check.inconclusive) {
+          console.debug(`[grab] preflight de "${candidate.title}": sin datos para validar la duración (no bloquea)`)
+        } else if (check.durationMin) {
+          console.log(`[grab] ✓ preflight OK — ${check.durationMin.toFixed(1)} min (esperado ${Number(target.runtime_min).toFixed(1)} min): ${candidate.title}`)
+        }
+        addedVia = svc
+        addedTorboxId = String(added.torboxId)
+        break
       }
-      base.status = 'error'
-      base.error = added.error || `Failed to add via ${svc}`
+      if (!addedVia) continue
+      base.ok = true
+      base.status = 'grabbed'
+      base.language = phase === 'latino' ? 'latino' : 'english'
+      base.source = candidate.indexer || (phase === 'latino' ? 'latino' : 'jackett')
+      base.service = addedVia
+      base.torbox_id = addedTorboxId
+      base.title = candidate.title.slice(0, 300)
+      try {
+        recordGrab({
+          watchlist_id: target.watchlist_id,
+          tmdb_id: target.tmdb_id,
+          media_type: target.media_type,
+          season: target.kind === 'episode' ? target.season ?? null : null,
+          episode: target.kind === 'episode' ? target.episode ?? null : null,
+          kind: target.kind === 'movie' ? 'movie' : 'episode',
+          title: candidate.title,
+          language: phase === 'latino' ? 'latino' : 'english',
+          source: candidate.indexer || '',
+          status: 'grabbed',
+          torbox_id: addedTorboxId,
+          info_hash: candidate.info_hash || hashFromLink(candidate.link) || '',
+          dest_folder: destFolder,
+        })
+      } catch (e: any) {
+        console.error('[grab] history write failed:', e.message)
+      }
+      console.log(`[grab] ✓ ${target.media_type} "${target.title}"${target.kind === 'episode' ? ` S${target.season}E${target.episode}` : ''} → ${phase} (${candidate.indexer}) via ${addedVia} → ${destFolder}`)
+      return base
     }
   }
   return base

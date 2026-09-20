@@ -39,6 +39,8 @@ export interface TmdbDetail {
   // tv
   seasons?: TmdbSeasonSummary[]
   first_air_date?: string
+  /** Duración típica de los episodios (min) — respaldo cuando falta el runtime del capítulo. */
+  episode_run_time?: number[]
   next_episode_to_air?: { season_number: number; episode_number: number; air_date: string; name: string } | null
 }
 

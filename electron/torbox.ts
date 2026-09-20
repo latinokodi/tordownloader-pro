@@ -196,6 +196,22 @@ export class TorboxAPI {
   }
 
   /**
+   * ¿Estos infohashes están ya en la caché de TorBox? Con `list_files` viene
+   * además la lista de archivos de cada torrent, que es lo que permite
+   * descartar releases falsos (sólo .zipx/.exe/.url) ANTES de añadirlos.
+   * Acepta varios hashes separados por coma en una sola llamada.
+   */
+  async checkCached(hashes: string[]): Promise<any> {
+    const list = (hashes || []).map((h) => String(h || '').trim().toLowerCase()).filter(Boolean)
+    if (list.length === 0) return { success: true, data: [] }
+    return this.request({
+      method: 'GET',
+      url: '/torrents/checkcached',
+      params: { hash: list.join(','), format: 'list', list_files: 'true' },
+    });
+  }
+
+  /**
    * Guarantee a boolean `success` field on any TorBox payload.
    * TorBox (FastAPI) answers a malformed request with a bare `{detail:[...]}`
    * validation body and NO `success` key, which silently defeats callers doing

@@ -16,6 +16,8 @@ import { grab, findLatinoForUpgrade, type GrabTarget, type GrabOutcome } from '.
 import { tmdbDetail, tmdbSeason } from './tmdb'
 import { setupSearchEnv } from './python-run'
 import { eventBus } from './event-bus'
+import { healLibrary, type HealResult } from './library-heal'
+import { jellyfinRefresh } from './library'
 
 export interface MonitorStatus {
   enabled: boolean
@@ -66,6 +68,21 @@ interface DueTarget {
   episode?: number
   // true = already in the attempts table (backoff state exists, retry path)
   tracked?: boolean
+  /** Duración esperada (min) según TMDB — la usa el preflight del release. */
+  runtime?: number
+}
+
+/**
+ * Duración "de la serie" cuando TMDB no la trae por episodio (habitual en el
+ * capítulo recién emitido): mediana de `episode_run_time`. Sin esto un episodio
+ * de otra serie homónima de 43 min pasaba sin ser detectado.
+ */
+function seriesFallbackRuntime(detail: any): number | undefined {
+  const list = (detail?.episode_run_time || []).map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0)
+  if (list.length === 0) return undefined
+  const sorted = [...list].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
 // Backfill scopes (Sonarr-style "what to download when I add this series").
@@ -124,6 +141,7 @@ async function seasonWantedEpisodes(
       season: seasonNumber,
       episode: epNum,
       tracked: Boolean(getAttempt(item.tmdb_id, 'series', seasonNumber, epNum)),
+      runtime: Number(ep?.runtime) > 0 ? Number(ep.runtime) : undefined,
     })
   }
   return out
@@ -153,6 +171,12 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
     season: season ?? undefined,
     episode: episode ?? undefined,
     language_profile: profile,
+    // Duración esperada: sin esto no hay forma barata de saber que un release
+    // es de otra serie/película homónima. El episodio recién emitido suele no
+    // traer runtime en TMDB → se cae a la duración típica de la serie.
+    runtime_min: isMovie
+      ? (Number(detail?.runtime) > 0 ? Number(detail.runtime) : undefined)
+      : (Number(target.runtime) > 0 ? Number(target.runtime) : seriesFallbackRuntime(detail)),
   }
 
   let outcome: GrabOutcome
@@ -238,7 +262,7 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
       const releaseDate = isoDateOf(detail?.release_date || '')
       const status = detail?.status || ''
       if (releaseDate && releaseDate <= todayIso() && !/cancelled|rumored/i.test(status) && !isGrabbed(item.tmdb_id, 'movie', null, null)) {
-        movieTargets.push({ kind: 'movie' }) // wanted right now — first attempt
+        movieTargets.push({ kind: 'movie', runtime: Number(detail?.runtime) > 0 ? Number(detail.runtime) : undefined }) // wanted right now — first attempt
       }
     }
     const movieState = movieTargets.length
@@ -350,7 +374,48 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
   return res
 }
 
-/** One full pass over the watchlist. Never runs concurrently with itself. */
+// ── Autoconsolidación de carpetas duplicadas ────────────────────────────────
+let lastHeal = 0
+const HEAL_INTERVAL_MS = 30 * 60 * 1000
+
+/**
+ * Repara carpetas paralelas del mismo título (p. ej. porque TMDB cambió el
+ * título: "Operativo Lioness" → "Lioness") antes de seguir grabando: si no, el
+ * episodio nuevo cae en la carpeta duplicada y la biblioteca se parte en dos.
+ * Corre como mucho cada 30 min (o forzado) y solo refresca Jellyfin si movió
+ * algo.
+ */
+export async function healLibraryFolders(force = false): Promise<HealResult | null> {
+  const settings = getSettings()
+  if (!force && Date.now() - lastHeal < HEAL_INTERVAL_MS) return null
+  lastHeal = Date.now()
+  try {
+    const result = healLibrary(settings.movies_folder || '', settings.series_folder || '')
+    for (const g of [...result.movies, ...result.series]) {
+      if (g.moved.length > 0) {
+        log(`biblioteca: "${g.keep}" — ${g.moved.length} archivo(s) recuperados de ${g.merged.map((m) => `"${m}"`).join(', ')}`)
+        for (const m of g.moved) console.debug(`[Heal] ${m.from}${pathSep()}${m.file} → ${m.to}`)
+      }
+      if (g.pruned.length > 0) console.log(`[Heal] carpetas vacías eliminadas: ${g.pruned.join(', ')}`)
+      for (const s of g.skipped) {
+        if (!/sin contenido/.test(s.reason)) console.warn(`[Heal] sin tocar ${s.file}: ${s.reason}`)
+      }
+    }
+    if (result.changed) {
+      const jf = await jellyfinRefresh()
+      log(`biblioteca consolidada — Jellyfin ${jf.sent ? 'refrescado' : `sin refrescar (${jf.error || 'sin configurar'})`}`)
+    }
+    return result
+  } catch (e: any) {
+    console.warn(`[Heal] no se pudo consolidar la biblioteca: ${e.message}`)
+    return null
+  }
+}
+
+function pathSep(): string {
+  return process.platform === 'win32' ? '\\' : '/'
+}
+
 export async function runMonitorTick(force = false): Promise<MonitorStatus['lastSummary']> {
   const settings = getSettings()
   if (!force && !settings.monitor_enabled) {
@@ -365,6 +430,9 @@ export async function runMonitorTick(force = false): Promise<MonitorStatus['last
   const summary = { processed: 0, grabbed: 0, waiting: 0, deferred: 0, errors: 0 }
   try {
     setupSearchEnv(settings)
+    // Antes de buscar nada: si la biblioteca tiene carpetas duplicadas del
+    // mismo título, se consolidan para que lo nuevo caiga en la carpeta buena.
+    await healLibraryFolders()
     const items = listWatchlist().filter((i) => i.monitored)
     log(`tick start — ${items.length} monitored item(s)`)
     for (const item of items) {
@@ -625,6 +693,9 @@ async function runUpgradeScan(item: WatchlistItem): Promise<void> {
       episode: row.episode ?? undefined,
       language_profile: 'latino_only',
       mode: 'upgrade',
+      runtime_min: row.kind === 'movie'
+        ? (Number(detail?.runtime) > 0 ? Number(detail.runtime) : undefined)
+        : seriesFallbackRuntime(detail),
     }
     const best = await findLatinoForUpgrade(target)
     const st = upgradeScans.get(item.id)!
@@ -669,6 +740,9 @@ export async function applyUpgrade(itemId: number, season: number | null, episod
     episode: isMovie ? undefined : (episode as number),
     language_profile: 'latino_only',
     mode: 'upgrade',
+    runtime_min: isMovie
+      ? (Number(detail?.runtime) > 0 ? Number(detail.runtime) : undefined)
+      : seriesFallbackRuntime(detail),
   }
   const outcome = await grab(target)
   if (outcome.status !== 'grabbed') {

@@ -161,6 +161,9 @@ def cmd_detail(tmdb_id, media_type):
         result['original_title'] = data.get('original_name', '')
         result['first_air_date'] = data.get('first_air_date', '')
         result['status'] = data.get('status', '')
+        # Duración típica de la serie: permite validar un release aunque TMDB
+        # todavía no tenga runtime para el episodio recién emitido.
+        result['episode_run_time'] = [int(n) for n in (data.get('episode_run_time') or []) if isinstance(n, (int, float)) and n]
         next_ep = data.get('next_episode_to_air') or {}
         result['next_episode_to_air'] = {
             'season_number': next_ep.get('season_number'),
