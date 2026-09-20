@@ -77,6 +77,8 @@ interface DueTarget {
   tracked?: boolean
   /** Duración esperada (min) según TMDB — la usa el preflight del release. */
   runtime?: number
+  /** Fecha de emisión (YYYY-MM-DD): decide el orden de la cola. */
+  air_date?: string
 }
 
 /**
@@ -95,6 +97,8 @@ function seriesFallbackRuntime(detail: any): number | undefined {
 // Backfill scopes (Sonarr-style "what to download when I add this series").
 const MAX_TARGETS_PER_TICK = 5 // big backfills spread across ticks, politely
 const SEASON_SCAN_BUDGET = 6 // max TMDB season fetches per series per tick
+/** Por encima de esto se rota una ventana de temporadas en vez de escanearlas todas. */
+const MAX_SEASONS_SCANNED = 20
 const scanCursor = new Map<number, number>() // rotation cursor for 'all' scope
 
 /**
@@ -167,6 +171,7 @@ async function seasonWantedEpisodes(
       episode: epNum,
       tracked: Boolean(getAttempt(item.tmdb_id, 'series', seasonNumber, epNum)),
       runtime: Number(ep?.runtime) > 0 ? Number(ep.runtime) : undefined,
+      air_date: airDate,
     })
   }
   return out
@@ -363,14 +368,18 @@ async function collectSeriesTargets(
     if (scope === 'first_season') {
       seasonNumbers = Array.from(new Set([1, currentNum]))
     } else if (scope === 'all') {
-      const allNums = airedSeasons.map((s: any) => Number(s.season_number)).sort((a, b) => b - a)
-      if (allNums.length > SEASON_SCAN_BUDGET) {
+      const allNums = airedSeasons.map((s: any) => Number(s.season_number)).sort((a, b) => a - b)
+      if (allNums.length > MAX_SEASONS_SCANNED) {
+        // Series muy largas: se rota una ventana para no pedir 30 temporadas a
+        // TMDB en cada vuelta.
         const cursor = scanCursor.get(item.tmdb_id) || 0
         const window = allNums.slice(cursor, cursor + SEASON_SCAN_BUDGET)
         if (window.length < SEASON_SCAN_BUDGET) window.push(...allNums.slice(0, SEASON_SCAN_BUDGET - window.length))
         scanCursor.set(item.tmdb_id, (cursor + SEASON_SCAN_BUDGET) % allNums.length)
         seasonNumbers = Array.from(new Set([currentNum, ...window]))
       } else {
+        // Se escanean TODAS (la lista va cacheada 10 min): así el backfill baja
+        // las temporadas en orden, desde la primera, sin saltarse ninguna.
         seasonNumbers = allNums
       }
     }
@@ -389,10 +398,37 @@ async function collectSeriesTargets(
     if (!already) fresh.push({ kind: 'episode', season: a.season, episode: a.episode, tracked: true })
   }
 
-  // Newest targets first.
-  fresh.sort((a, b) => (b.season! - a.season!) || (b.episode! - a.episode!))
+  // Orden de la cola: lo recién emitido primero (lo más nuevo antes, para no
+  // perder el capítulo de esta semana) y el backfill EN ORDEN ascendente desde
+  // S01E01 — así se puede empezar a ver la serie desde el principio mientras el
+  // resto se descarga. La decisión vive en orderTargetsForQueue() para poder
+  // probarla sin arrancar el servicio (spec/features/queue-order.feature).
+  const addedDate = isoDateOf(item.added_at)
+  const ordered = orderTargetsForQueue(fresh, addedDate)
   const seasonTag = airedSeasons.length > 0 ? `S${Number([...airedSeasons].sort((a: any, b: any) => Number(b.season_number) - Number(a.season_number))[0].season_number)}` : '—'
-  return { targets: fresh, seasonTag, scope }
+  return { targets: ordered, seasonTag, scope }
+}
+
+/** Objetivo concreto de la cola (lo mismo que DueTarget, exportado para el spec). */
+export type QueueTarget = DueTarget
+
+/**
+ * Orden de la cola de descarga:
+ *   1) lo recién emitido (fecha >= fecha en que se añadió el título), lo más
+ *      nuevo primero — el capítulo de esta semana no espera al backfill;
+ *   2) el resto EN ORDEN ascendente (S01E01 → S01E02 → …), sin saltos.
+ * Los reintentos atrasados no traen fecha, así que van al grupo 2 y respetan
+ * el orden.
+ */
+export function orderTargetsForQueue<T extends QueueTarget>(targets: T[], addedDate: string): T[] {
+  const isRecent = (t: QueueTarget): boolean => Boolean(t.air_date && t.air_date >= addedDate)
+  return [...targets].sort((a, b) => {
+    const aNew = isRecent(a)
+    const bNew = isRecent(b)
+    if (aNew !== bNew) return aNew ? -1 : 1
+    if (aNew) return ((b.season ?? 0) - (a.season ?? 0)) || ((b.episode ?? 0) - (a.episode ?? 0))
+    return ((a.season ?? 0) - (b.season ?? 0)) || ((a.episode ?? 0) - (b.episode ?? 0))
+  })
 }
 
 /** Objetivos que se están intentando ahora mismo (evita duplicados tick/cola). */

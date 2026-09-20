@@ -23,7 +23,7 @@
 import fs from 'fs'
 import path from 'path'
 import { sameTitleFolder, safeSegment, resolveSeasonFolder, parseReleaseName } from './media-layout'
-import { getMediaFolder, setMediaFolder } from './db'
+import { getMediaFolder, setMediaFolder, getDB } from './db'
 
 const VIDEO_RE = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i
 const SIDE_RE = /\.(srt|vtt|ass|ssa|sub)$/i
@@ -90,7 +90,7 @@ function episodeMarker(name: string): string {
  * Consolida las carpetas de un root que representan el mismo título.
  * `kind` decide si se buscan temporadas dentro de cada carpeta.
  */
-export function healRoot(root: string, kind: 'movie' | 'series'): HealGroup[] {
+export function healRoot(root: string, kind: 'movie' | 'series', preferred: string[] = []): HealGroup[] {
   const dirs = listDirs(root)
   const groups: HealGroup[] = []
   const used = new Set<string>()
@@ -121,8 +121,17 @@ export function healRoot(root: string, kind: 'movie' | 'series'): HealGroup[] {
       continue
     }
 
-    // La carpeta "de verdad" = la que más videos tiene (empate: la memorizada).
-    withMedia.sort((a, b) => b.files.length - a.files.length)
+    // La carpeta "de verdad" = la que la app tiene memorizada en media_folders
+    // (es la que ya usa Jellyfin y la que el usuario reconoce). Si ninguna está
+    // memorizada, gana la que más videos tiene — nunca la recién creada por un
+    // cambio de título, que es justo la que trae menos contenido.
+    const remembered = new Set(preferred)
+    withMedia.sort((a, b) => {
+      const ap = remembered.has(a.name) ? 1 : 0
+      const bp = remembered.has(b.name) ? 1 : 0
+      if (ap !== bp) return bp - ap
+      return b.files.length - a.files.length
+    })
     const keep = withMedia[0]
     const group: HealGroup = { keep: keep.name, merged: [], moved: [], skipped: [], pruned: [] }
 
@@ -398,8 +407,16 @@ export function enforceMovieLayout(root: string): HealGroup[] {
  * Devuelve el resumen; el llamador decide si refrescar Jellyfin (changed=true).
  */
 export function healLibrary(moviesRoot: string, seriesRoot: string): HealResult {
-  const movies = moviesRoot ? [...healRoot(moviesRoot, 'movie'), ...enforceMovieLayout(moviesRoot)] : []
-  const series = seriesRoot ? [...healRoot(seriesRoot, 'series'), ...enforceSeriesLayout(seriesRoot)] : []
+  // Carpetas que la app ya tiene memorizadas: son las canónicas al consolidar.
+  const rememberedFolders = (kind: 'movie' | 'series'): string[] => {
+    try {
+      return (getDB().prepare('SELECT folder FROM media_folders WHERE media_type = ?').all(kind) as any[]).map((r) => r.folder)
+    } catch {
+      return []
+    }
+  }
+  const movies = moviesRoot ? [...healRoot(moviesRoot, 'movie', rememberedFolders('movie')), ...enforceMovieLayout(moviesRoot)] : []
+  const series = seriesRoot ? [...healRoot(seriesRoot, 'series', rememberedFolders('series')), ...enforceSeriesLayout(seriesRoot)] : []
   const fixedMovies = moviesRoot ? repairMediaFolders(moviesRoot, 'movie', movies) : []
   const fixedSeries = seriesRoot ? repairMediaFolders(seriesRoot, 'series', series) : []
   const changed = [...movies, ...series].some((g) => g.moved.length > 0 || g.pruned.length > 0) || fixedMovies.length > 0 || fixedSeries.length > 0

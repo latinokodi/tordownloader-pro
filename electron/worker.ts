@@ -10,7 +10,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { eventBus } from './event-bus';
-import { computeDestination, safeSegment, seriesNameMatches } from './media-layout';
+import { computeDestination, safeSegment, seriesNameMatches, getAltTitlesCached } from './media-layout';
 
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
@@ -107,12 +107,14 @@ export async function verifyDownloadedGrab(torboxId: string, videoPaths: string[
   // localizados (se buscan por IMDB id), así que ahí no se juzga.
   if (row.language !== 'latino' && row.title) {
     let candidates: Array<string | undefined> = []
+    let altTitles: string[] = []
     try {
-      const item = findWatchlistItem(row.tmdb_id, row.media_type)
-      const detail = await tmdbDetail(row.tmdb_id, row.media_type)
-      candidates = [detail?.original_title, item?.title, detail?.title]
+      const item = findWatchlistItem(row.tmdb_id, row.media_type);
+      const detail = await tmdbDetail(row.tmdb_id, row.media_type);
+      candidates = [detail?.original_title, item?.title, detail?.title];
+      altTitles = await getAltTitlesCached(row.tmdb_id, row.media_type === 'movie' ? 'movie' : 'series');
     } catch { /* sin datos: no se puede juzgar */ }
-    if (candidates.some(Boolean) && !seriesNameMatches(row.title, candidates)) {
+    if (candidates.some(Boolean) && !seriesNameMatches(row.title, candidates, altTitles)) {
       const expected = candidates.filter(Boolean)[0]
       const reason = `Es de otra serie: "${row.title}" no corresponde a "${expected}"`
       console.warn(`[Worker] ✗ ${reason}`)

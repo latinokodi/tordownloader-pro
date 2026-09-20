@@ -466,35 +466,53 @@ export function releaseSeriesName(name: string): string {
   let s = String(name || '').replace(/\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i, '')
   s = s.replace(/\[[^\]]*\]/g, ' ').replace(/\([^)]*\)/g, ' ')
   const cut = s.search(
-    /\bS\d{1,2}\s*E\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i,
+    /\bS\d{1,2}\s*E\d{1,3}\b|\b\d{1,2}x\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i,
   )
-  return cut > 0 ? s.slice(0, cut) : s
+  // El nombre del release empieza por la etiqueta (no hay título que comparar):
+  // no se juzga, para no descartar por falta de datos.
+  return cut >= 0 ? s.slice(0, cut) : s
 }
 
 /**
  * ¿El nombre del release corresponde a alguno de los títulos del objetivo?
- * Tolerante: ignora acentos/puntuación/stopwords y acepta que el release use
- * solo parte del título o una variante con las mismas palabras.
+ * El título tiene que ser EL título (no una parte): antes bastaba con que
+ * apareciera como subcadena y entraban "Standoff.The.FBI.Power.and.Paranoia"
+ * (docuserie), "FBI International" y "FBI True" (spin-offs) en una búsqueda de
+ * "FBI". Se acepta:
+ *   - el mismo título, comparando los tokens pegados (tolera "Chicago P.D." vs
+ *     "Chicago PD" y mayúsculas/acentos/puntuación/artículos),
+ *   - que el release use solo la parte FINAL del título (franquicia omitida:
+ *     "Strange New Worlds" para "Star Trek: Strange New Worlds"),
+ *   - un TÍTULO ALTERNATIVO de TMDB ("Special Ops Lioness" para "Lioness",
+ *     "El tigre y el dragón" para "Tigre y dragón") — llegan en `altTitles`.
  * Devuelve true cuando no se puede juzgar (nombre vacío) — nunca bloquea por
  * falta de datos.
  */
-export function seriesNameMatches(releaseName: string, candidates: Array<string | undefined | null>): boolean {
-  const seriesTokens = normTokens(releaseSeriesName(releaseName))
-  const series = seriesTokens.join('')
-  if (!series) return true
-  const cands = candidates
+export function seriesNameMatches(
+  releaseName: string,
+  candidates: Array<string | undefined | null>,
+  altTitles: string[] = [],
+): boolean {
+  const series = normTokens(releaseSeriesName(releaseName))
+  if (series.length === 0) return true
+  const cands = [...candidates, ...altTitles]
     .filter((c): c is string => Boolean(c && String(c).trim()))
-    .map((c) => ({ tokens: normTokens(String(c)) }))
-    .map((c) => ({ tokens: c.tokens, flat: c.tokens.join('') }))
-    .filter((c) => c.flat.length > 0)
+    .map((c) => normTokens(String(c)))
+    .filter((t) => t.length > 0)
   if (cands.length === 0) return true
-  for (const c of cands) {
-    if (series === c.flat || series.includes(c.flat)) return true
-    // El release trae menos palabras que el título ("Gentlemen" vs "The Gentlemen"):
-    // se acepta si cubre la mayor parte del nombre.
-    if (c.flat.includes(series) && series.length / c.flat.length >= 0.7) return true
-    // Mismas palabras en otro orden o con separadores distintos.
-    if (c.tokens.every((t) => series.includes(t))) return true
+
+  const flat = (tokens: string[]): string => tokens.join('')
+  /** ¿El release usa solo la parte FINAL del título? ("Strange New Worlds") */
+  const isTailOfTitle = (tokens: string[]): boolean => {
+    if (series.length < 2 || series.length >= tokens.length) return false
+    const offset = tokens.length - series.length
+    return series.every((t, i) => tokens[offset + i] === t)
+  }
+
+  const seriesFlat = flat(series)
+  for (const tokens of cands) {
+    if (flat(tokens) === seriesFlat) return true
+    if (isTailOfTitle(tokens)) return true
   }
   return false
 }
@@ -503,4 +521,26 @@ export function seriesNameMatches(releaseName: string, candidates: Array<string 
 export function releaseYear(name: string): number {
   const m = String(name || '').match(/\b(19|20)\d{2}\b/)
   return m ? parseInt(m[0], 10) : 0
+}
+
+const altTitlesCache = new Map<string, { at: number; titles: string[] }>()
+const ALT_TITLES_TTL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Títulos alternativos de TMDB (ES/MX/US…) con caché en memoria. Los usa el
+ * validador de nombres del grabber y del worker: sin ellos, un release que usa
+ * el título alternativo ("Special Ops Lioness" para "Lioness") se rechazaría.
+ */
+export async function getAltTitlesCached(tmdbId: number, kind: 'movie' | 'series'): Promise<string[]> {
+  if (!tmdbId) return []
+  const key = `${kind}:${tmdbId}`
+  const hit = altTitlesCache.get(key)
+  if (hit && Date.now() - hit.at < ALT_TITLES_TTL_MS) return hit.titles
+  try {
+    const titles = await tmdbAltTitles(tmdbId, kind)
+    altTitlesCache.set(key, { at: Date.now(), titles })
+    return titles
+  } catch {
+    return hit?.titles || []
+  }
 }

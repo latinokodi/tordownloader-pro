@@ -7,7 +7,7 @@ import path from 'path'
 import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, deleteDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, addBadRelease, type Settings, type DebridService, type LanguageProfile } from './db'
 import { recordGrab } from './watchlist'
 import { runPythonLines, setupSearchEnv } from './python-run'
-import { computeDestination, safeSegment, seriesNameMatches, releaseYear } from './media-layout'
+import { computeDestination, safeSegment, seriesNameMatches, releaseYear, getAltTitlesCached } from './media-layout'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -39,6 +39,12 @@ export interface GrabTarget {
    * 43 min vs 2024 = 53 min). Si falta, el preflight no bloquea nada.
    */
   runtime_min?: number
+  /**
+   * Títulos alternativos de TMDB. Los rellena `grab()`/`findLatinoForUpgrade()`
+   * antes de puntuar: hay releases que usan el título alternativo
+   * ("Special Ops Lioness" para "Lioness") y sin ellos se rechazarían.
+   */
+  alt_titles?: string[]
 }
 
 export interface GrabResultItem {
@@ -159,7 +165,7 @@ function scoreResult(r: GrabResultItem, target: GrabTarget): number {
     // (serie Dark, 2017) aparecía en la búsqueda de "Dark Matter" porque el
     // grupo del release parece parte del título. Los proveedores latino se
     // buscan por IMDB id, así que ahí solo se penaliza (nombres localizados).
-    if (!seriesNameMatches(t, [target.title, target.original_title])) {
+    if (!seriesNameMatches(t, [target.title, target.original_title], target.alt_titles || [])) {
       if (!r.latino) return -750
       score -= 250
     } else if (target.year) {
@@ -480,6 +486,9 @@ export async function findLatinoForUpgrade(target: GrabTarget): Promise<GrabResu
     } catch { /* no key or network */ }
   }
   if (!imdbId) return null
+  if (!target.alt_titles || target.alt_titles.length === 0) {
+    try { target.alt_titles = await getAltTitlesCached(target.tmdb_id, target.media_type) } catch { /* se puntúa sin ellos */ }
+  }
   const capGb = target.kind === 'movie' ? settings.max_movie_size_gb : settings.max_series_size_gb
   const maxBytes = capGb > 0 ? capGb * 1024 ** 3 : null
   let results: GrabResultItem[] = []
@@ -615,6 +624,11 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
       const detail = await tmdbDetail(target.tmdb_id, target.media_type)
       imdbId = detail?.imdb_id || ''
     } catch { /* no key or network */ }
+  }
+  // Títulos alternativos (TMDB) antes de puntuar: hay releases con el título
+  // alternativo ("Special Ops Lioness") que si no se rechazarían por nombre.
+  if (!target.alt_titles || target.alt_titles.length === 0) {
+    try { target.alt_titles = await getAltTitlesCached(target.tmdb_id, target.media_type) } catch { /* se puntúa sin ellos */ }
   }
   const targetWithImdb = { ...target, imdb_id: imdbId }
 
