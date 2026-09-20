@@ -188,9 +188,29 @@ elige la que más contenido tiene. El cambio de título no crea carpeta nueva. L
 duplicados existentes se consolidan (videos + sus `.srt`), y `media_folders` se
 corrige solo.
 
+### B9 · Adopción de lo que el debrid ya tiene (reconciliación)
+La app y el debrid se desincronizan: filas borradas a mano, reinicios, añadidos
+desde otro cliente. Quedan torrents **ya listos** en la cuenta (cacheados) que la
+app no baja porque no tiene fila — y en cooldown del debrid son lo ÚNICO que se
+puede bajar.
+- Al reconciliar, se adopta (fila local + cola de descarga) todo torrent del
+  debrid que: corresponde a un título **monitorizado** (mismo comparador de
+  nombres de B1, con títulos alternativos), trae marcador de episodio, **no** está
+  ya en la biblioteca y no supera el tope de tamaño del tipo.
+- Nunca se adopta: lo que ya tiene fila local, los **packs** de temporada/colección
+  (sin `SxxEyy`), lo que no es de un título monitorizado (spin-offs, WWE, contenido
+  ajeno), lo que ya está en disco, ni lo que supera el tope.
+- Prioridad: primero lo que ya está listo (`cached`/`completed`), después lo que el
+  debrid aún está bajando (`downloading`/`metadl`); dentro de cada grupo, orden
+  ascendente de temporada/episodio. Los estados sin contenido (`checking`) se
+  descartan hasta que el debrid tenga algo.
+- Se ejecuta al arrancar el servicio, cada 15 min desde el monitor, y a mano con
+  `POST /api/debrid/reconcile`. Respeta `max_concurrent_downloads` al bajar (el
+  tope lo aplica el worker) y registra el resumen con el motivo de cada descarte.
+
 ## 9. Success criteria (verificables)
 
-1. `npm run spec` en verde, con escenarios que cubren B1–B5 y B8.
+1. `npm run spec` en verde, con escenarios que cubren B1–B5, B8 y B9.
 2. `POST /api/library/heal` sobre la biblioteca real devuelve `changed:false`.
 3. `scripts/audit-tv-layout.py` → 0 problemas; sin episodios duplicados.
 4. Logs reales muestran: `cola: N episodio(s) encolado(s) — 3/3 en curso`,

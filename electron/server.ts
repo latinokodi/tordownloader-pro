@@ -17,6 +17,7 @@ import { initMetaSearch, getMetaSearch, type SearchProgress } from './metasearch
 import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
 import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade, getCalendar, healLibraryFolders } from './monitor'
+import { reconcileDebrid } from './debrid-reconcile'
 import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath, fetchJellyfinPoster } from './library'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
@@ -536,6 +537,34 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       if (api === 'library/heal' && method === 'POST') {
         const result = await healLibraryFolders(true)
         return sendJson(res, 200, { success: true, data: result })
+      }
+      // Reconciliación con el debrid (spec B9): adopta los torrents que la cuenta
+      // ya tiene listos y que la app no baja por no tener fila. El monitor lo hace
+      // solo al arrancar y cada 15 min; esto es para forzarlo desde la UI.
+      if (api === 'debrid/reconcile' && method === 'POST') {
+        const dry = /[?&]dry=1/.test(req.url || '')
+        const result = await reconcileDebrid({ dry })
+        return sendJson(res, 200, {
+          success: true,
+          data: {
+            adopted: result.adopted,
+            skipped: result.skipped,
+            ready: result.plan.adopt.filter((d) => d.ready).length,
+            adopt: result.plan.adopt.map((d) => ({
+              torrentId: d.torrentId,
+              name: d.name.slice(0, 120),
+              tmdbId: d.tmdbId,
+              mediaType: d.mediaType,
+              season: d.season,
+              episode: d.episode,
+              ready: d.ready,
+              sizeGb: Math.round(d.sizeGb * 100) / 100,
+            })),
+            skip: result.plan.skip.slice(0, 40).map((s) => ({ name: s.name.slice(0, 100), reason: s.reason })),
+            skipped_total: result.plan.skip.length,
+            reason: result.reason,
+          },
+        })
       }
 
       if (api === 'search' && method === 'POST') {

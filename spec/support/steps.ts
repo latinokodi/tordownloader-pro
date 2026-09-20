@@ -10,6 +10,12 @@ import {
 import { durationMatches, durationToleranceMin } from '../../electron/preflight'
 import { healLibrary } from '../../electron/library-heal'
 import { orderTargetsForQueue, type QueueTarget } from '../../electron/monitor'
+import {
+  planReconcile,
+  type DebridTorrent,
+  type ReconcilePlan,
+  type WatchedTitle,
+} from '../../electron/debrid-reconcile'
 
 export interface World {
   titles?: string[]
@@ -27,6 +33,12 @@ export interface World {
   seriesRoot?: string
   heal?: ReturnType<typeof healLibrary>
   dest?: { root: string; folder: string }
+  watched?: WatchedTitle[]
+  torrents?: DebridTorrent[]
+  knownIds?: number[]
+  onDisk?: Set<string>
+  caps?: { series: number; movie: number }
+  plan?: ReconcilePlan
 }
 
 export interface StepRun {
@@ -222,7 +234,112 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       if (world.dest.folder !== expected) throw new Error(`destino ${world.dest.folder} · esperado ${expected}`)
     },
   },
+
+  // ── B9 · reconciliación del debrid ─────────────────────────────────────
+  {
+    pattern: /^estos títulos monitorizados$/,
+    fn: ({ world, rows }) => {
+      world.watched = rows.map((r) => ({
+        tmdbId: Number(r[0]),
+        mediaType: r[1] === 'movie' ? 'movie' : 'series',
+        titles: r[2].split(';').map((s) => s.trim()).filter(Boolean),
+        year: Number(r[3]) || undefined,
+      }))
+    },
+  },
+  {
+    pattern: /^en el debrid hay estos torrents$/,
+    fn: ({ world, rows }) => {
+      world.torrents = rows.map((r) => ({
+        id: Number(r[0]),
+        name: r[1],
+        state: r[2],
+        sizeBytes: Math.round((Number(r[3]) || 0) * 1024 ** 3),
+      }))
+    },
+  },
+  {
+    pattern: /^los torrents locales son "([^"]*)"$/,
+    fn: ({ world }, list) => { world.knownIds = list.split(';').map((s) => Number(s.trim())).filter(Boolean) },
+  },
+  {
+    pattern: /^el tope es de "([^"]*)" GB para series y "([^"]*)" GB para películas$/,
+    fn: ({ world }, series, movie) => { world.caps = { series: Number(series) || 0, movie: Number(movie) || 0 } },
+  },
+  {
+    pattern: /^en la biblioteca del título (\d+) existe el episodio "S(\d+)E(\d+)"$/,
+    fn: ({ world }, tmdb, season, episode) => {
+      world.onDisk = world.onDisk || new Set<string>()
+      world.onDisk.add(`${tmdb}:S${Number(season)}E${Number(episode)}`)
+    },
+  },
+  {
+    pattern: /^reconcilio el debrid$/,
+    fn: ({ world }) => {
+      const caps = world.caps || { series: 0, movie: 0 }
+      world.plan = planReconcile(world.torrents || [], {
+        watched: world.watched || [],
+        knownTorrentIds: world.knownIds || [],
+        isOnDisk: (tmdbId, mediaType, season, episode) =>
+          world.onDisk?.has(mediaType === 'series' ? `${tmdbId}:S${season}E${episode}` : `${tmdbId}:movie`) || false,
+        maxSizeGb: (mediaType) => (mediaType === 'movie' ? caps.movie : caps.series),
+      })
+    },
+  },
+  {
+    pattern: /^se adopta el torrent (\d+) como "([^"]*)" "([^"]*)"$/,
+    fn: ({ world }, id, title, marker) => {
+      const plan = needPlan(world)
+      const hit = plan.adopt.find((d) => d.torrentId === Number(id))
+      if (!hit) throw new Error(`no se adoptó el torrent ${id} (descartado: ${reasonOf(world, Number(id))})`)
+      const wanted = world.watched?.find((w) => w.tmdbId === hit.tmdbId)
+      if (wanted && !wanted.titles.includes(title)) throw new Error(`adoptado con título ${wanted.titles.join('/')}, esperado ${title}`)
+      const got = hit.mediaType === 'movie' ? 'película' : `S${String(hit.season).padStart(2, '0')}E${String(hit.episode).padStart(2, '0')}`
+      if (got !== marker) throw new Error(`adoptado como ${got}, esperado ${marker}`)
+    },
+  },
+  {
+    pattern: /^no se adopta el torrent (\d+)$/,
+    fn: ({ world }, id) => {
+      const plan = needPlan(world)
+      if (plan.adopt.some((d) => d.torrentId === Number(id))) throw new Error(`se adoptó el torrent ${id} y no debería`)
+    },
+  },
+  {
+    pattern: /^se descarta el torrent (\d+) porque "([^"]*)"$/,
+    fn: ({ world }, id, motivo) => {
+      const plan = needPlan(world)
+      if (plan.adopt.some((d) => d.torrentId === Number(id))) throw new Error(`se adoptó el torrent ${id} y debía descartarse`)
+      const reason = reasonOf(world, Number(id))
+      if (!reason) throw new Error(`el torrent ${id} no aparece ni adoptado ni descartado`)
+      if (!reason.toLowerCase().includes(motivo.toLowerCase())) throw new Error(`motivo "${reason}", esperado que contuviera "${motivo}"`)
+    },
+  },
+  {
+    pattern: /^no se adopta ningún torrent$/,
+    fn: ({ world }) => {
+      const plan = needPlan(world)
+      if (plan.adopt.length > 0) throw new Error(`se adoptaron ${plan.adopt.length}: ${plan.adopt.map((d) => d.name).join(', ')}`)
+    },
+  },
+  {
+    pattern: /^el orden de adopción es "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      const got = needPlan(world).adopt.map((d) => d.torrentId).join(', ')
+      const want = expected.split(',').map((s) => s.trim()).filter(Boolean).join(', ')
+      if (got !== want) throw new Error(`orden de adopción: ${got}\n            esperado:          ${want}`)
+    },
+  },
 ]
+
+function needPlan(world: World): ReconcilePlan {
+  if (!world.plan) throw new Error('no se reconcilió el debrid antes')
+  return world.plan
+}
+
+function reasonOf(world: World, id: number): string {
+  return world.plan?.skip.find((s) => s.torrentId === id)?.reason || ''
+}
 
 function writeIn(abs: string): void {
   fs.mkdirSync(path.dirname(abs), { recursive: true })

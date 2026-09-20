@@ -466,7 +466,7 @@ export function releaseSeriesName(name: string): string {
   let s = String(name || '').replace(/\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i, '')
   s = s.replace(/\[[^\]]*\]/g, ' ').replace(/\([^)]*\)/g, ' ')
   const cut = s.search(
-    /\bS\d{1,2}\s*E\d{1,3}\b|\b\d{1,2}x\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i,
+    /\bS\d{1,2}\s*E\d{1,3}\b|\bS\d{1,2}\b|\b\d{1,2}x\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i,
   )
   // El nombre del release empieza por la etiqueta (no hay título que comparar):
   // no se juzga, para no descartar por falta de datos.

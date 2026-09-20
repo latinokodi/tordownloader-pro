@@ -17,6 +17,7 @@ import { tmdbDetail, tmdbSeason } from './tmdb'
 import { setupSearchEnv } from './python-run'
 import { eventBus } from './event-bus'
 import { healLibrary, type HealResult } from './library-heal'
+import { reconcileDebrid, reconcileDue } from './debrid-reconcile'
 import { jellyfinRefresh } from './library'
 
 export interface MonitorStatus {
@@ -32,6 +33,7 @@ export interface MonitorStatus {
 
 let tickTimer: NodeJS.Timeout | null = null
 let backfillTimer: NodeJS.Timeout | null = null
+let reconcileTimer: NodeJS.Timeout | null = null
 let running = false
 let backfillBusy = false
 let lastRun: string | null = null
@@ -713,6 +715,11 @@ export function startMonitor(): void {
     setTimeout(() => kickMonitor(), 8_000)
     startBackfillLoop()
   }
+  // Reconciliación con el debrid (spec B9): al arrancar y cada 15 min, aparte del
+  // intervalo del tick. Adopta lo que el debrid ya tiene listo (p. ej. en cooldown
+  // es lo único que se puede bajar) y que la app no bajaba por no tener fila.
+  setTimeout(() => { void reconcileDebrid().catch((e) => console.debug('[Reconcile] falló:', e?.message || e)) }, 30_000)
+  startReconcileLoop()
   tickTimer = setInterval(() => {
     const s = getSettings()
     if (s.monitor_interval_minutes !== minutes) {
@@ -728,7 +735,25 @@ export function stopMonitor(): void {
     clearInterval(tickTimer)
     tickTimer = null
   }
+  if (reconcileTimer) {
+    clearInterval(reconcileTimer)
+    reconcileTimer = null
+  }
   stopBackfillLoop()
+}
+
+/**
+ * Reconciliación periódica con el debrid (spec B9). El chequeo corre cada 3 min
+ * pero sólo actúa cuando pasaron los 15 min: sin el freno, cada tick golpearía la
+ * API del debrid (la lista de TorBox tarda ~30 s).
+ */
+export function startReconcileLoop(): void {
+  if (reconcileTimer) clearInterval(reconcileTimer)
+  reconcileTimer = setInterval(() => {
+    if (!getSettings().monitor_enabled) return
+    if (!reconcileDue(15)) return
+    void reconcileDebrid().catch((e) => console.debug('[Reconcile] falló:', e?.message || e))
+  }, 3 * 60_000)
 }
 
 export function getMonitorLastSummary(): MonitorStatus['lastSummary'] {
