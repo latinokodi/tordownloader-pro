@@ -467,7 +467,8 @@ export async function healLibraryFolders(force = false): Promise<HealResult | nu
     const result = healLibrary(settings.movies_folder || '', settings.series_folder || '')
     for (const g of [...result.movies, ...result.series]) {
       if (g.moved.length > 0) {
-        log(`biblioteca: "${g.keep}" — ${g.moved.length} archivo(s) recuperados de ${g.merged.map((m) => `"${m}"`).join(', ')}`)
+        const origen = g.merged.length > 0 ? ` de ${g.merged.map((m) => `"${m}"`).join(', ')}` : ''
+        log(`biblioteca: "${g.keep}" — ${g.moved.length} archivo(s) recolocados${origen}`)
         for (const m of g.moved) console.debug(`[Heal] ${m.from}${pathSep()}${m.file} → ${m.to}`)
       }
       if (g.pruned.length > 0) console.log(`[Heal] carpetas vacías eliminadas: ${g.pruned.join(', ')}`)

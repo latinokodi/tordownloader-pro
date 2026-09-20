@@ -22,7 +22,7 @@
 
 import fs from 'fs'
 import path from 'path'
-import { sameTitleFolder, safeSegment, resolveSeasonFolder } from './media-layout'
+import { sameTitleFolder, safeSegment, resolveSeasonFolder, parseReleaseName } from './media-layout'
 import { getMediaFolder, setMediaFolder } from './db'
 
 const VIDEO_RE = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i
@@ -266,12 +266,140 @@ export function repairMediaFolders(root: string, kind: 'movie' | 'series', group
 }
 
 /**
- * Consolida películas y series. Devuelve el resumen; el llamador decide si
- * refrescar Jellyfin (changed=true) y qué loguear.
+ * Recoloca lo que NO está donde Jellyfin lo espera, dentro de una carpeta de
+ * serie (regla: `<serie>/Season N/<video>`):
+ *  - videos sueltos en la raíz de la serie → a su temporada (según SxxEyy del
+ *    nombre; sin marcador, a Season 1 si la serie no tiene temporadas).
+ *  - subcarpetas dentro de una carpeta de temporada (el worker aplana, pero un
+ *    torrent con carpeta interna o un copiado a mano las deja) → sus archivos
+ *    suben a la temporada y la subcarpeta se poda.
+ *  - carpetas de temporada vacías → se borran.
+ * Nunca sobrescribe: si el destino ya tiene ese nombre o ese episodio, se deja
+ * como está y se informa.
+ */
+export function enforceSeriesLayout(root: string): HealGroup[] {
+  const fixes: HealGroup[] = []
+  for (const series of listDirs(root)) {
+    const seriesDir = path.join(root, series)
+    const fix = emptyGroup(series)
+    let entries: fs.Dirent[] = []
+    try { entries = fs.readdirSync(seriesDir, { withFileTypes: true }) } catch { entries = [] }
+    const seasonDirs = entries
+      .filter((e) => e.isDirectory() && /^(?:season|temporada|t)\s*0*\d{1,3}$/i.test(e.name))
+      .map((e) => e.name)
+    const looseVideos = entries.filter((e) => e.isFile() && VIDEO_RE.test(e.name)).map((e) => e.name)
+
+    for (const file of looseVideos) {
+      const m = EP_RE.exec(file)
+      const seasonNum = m ? Number(m[1]) : (seasonDirs.length === 0 ? 1 : 0)
+      if (!seasonNum) {
+        fix.skipped.push({ file, reason: 'sin SxxEyy en el nombre y la serie ya tiene temporadas — sin mover' })
+        continue
+      }
+      const target = resolveSeasonFolder(seriesDir, seasonNum)
+      const destDir = path.join(seriesDir, target)
+      const dest = path.join(destDir, file)
+      if (fs.existsSync(dest)) {
+        fix.skipped.push({ file, reason: `ya existe en ${target}` })
+        continue
+      }
+      moveInto(series, path.join(seriesDir, file), destDir, target, fix)
+    }
+
+    // Subcarpetas dentro de una temporada: subir sus archivos y podar.
+    for (const season of seasonDirs) {
+      const seasonDir = path.join(seriesDir, season)
+      for (const sub of listDirs(seasonDir)) {
+        const subDir = path.join(seasonDir, sub)
+        for (const f of listFiles(subDir).filter((n) => VIDEO_RE.test(n) || SIDE_RE.test(n))) {
+          const dest = path.join(seasonDir, f)
+          if (fs.existsSync(dest)) {
+            fix.skipped.push({ file: `${season}/${sub}/${f}`, reason: `ya existe en ${season}` })
+            continue
+          }
+          moveInto(`${season}/${sub}`, path.join(subDir, f), seasonDir, season, fix)
+        }
+        if (listFiles(subDir).length === 0) {
+          try { fs.rmdirSync(subDir); fix.pruned.push(path.join(season, sub)) } catch { /* no vacía */ }
+        }
+      }
+      if (listFiles(seasonDir).length === 0 && listDirs(seasonDir).length === 0) {
+        try { fs.rmdirSync(seasonDir); fix.pruned.push(season) } catch { /* ignore */ }
+      }
+    }
+    if (fix.moved.length > 0 || fix.pruned.length > 0 || fix.skipped.length > 0) fixes.push(fix)
+  }
+  return fixes
+}
+
+function emptyGroup(name: string): HealGroup {
+  return { keep: name, merged: [], moved: [], skipped: [], pruned: [] }
+}
+
+/** Mueve un archivo (rename y, si falla, copia+borrado) y lo registra. */
+function moveInto(fromLabel: string, from: string, destDir: string, toLabel: string, fix: HealGroup): void {
+  const dest = path.join(destDir, path.basename(from))
+  try {
+    fs.mkdirSync(destDir, { recursive: true })
+    fs.renameSync(from, dest)
+  } catch {
+    try {
+      fs.copyFileSync(from, dest)
+      fs.rmSync(from, { force: true })
+    } catch (e: any) {
+      fix.skipped.push({ file: fromLabel, reason: `no se pudo mover (${e?.message || 'error'})` })
+      return
+    }
+  }
+  fix.moved.push({ from: fromLabel, to: toLabel, file: path.basename(from) })
+}
+
+/**
+ * Recoloca lo que NO está donde Jellyfin lo espera en el árbol de películas
+ * (`<Película (Año)>/<video>`): subcarpetas dentro de una carpeta de película
+ * (sus archivos suben; el video anidado no se ve) y videos sueltos en la raíz
+ * de películas (cada uno a su carpeta "Título (Año)").
+ */
+export function enforceMovieLayout(root: string): HealGroup[] {
+  const fixes: HealGroup[] = []
+  for (const entry of listDirs(root)) {
+    const dir = path.join(root, entry)
+    const fix = emptyGroup(entry)
+    for (const sub of listDirs(dir)) {
+      const subDir = path.join(dir, sub)
+      for (const f of listFiles(subDir).filter((n) => VIDEO_RE.test(n) || SIDE_RE.test(n))) {
+        if (fs.existsSync(path.join(dir, f))) {
+          fix.skipped.push({ file: `${sub}/${f}`, reason: `ya existe en ${entry}` })
+          continue
+        }
+        moveInto(`${entry}/${sub}`, path.join(subDir, f), dir, entry, fix)
+      }
+      if (listFiles(subDir).length === 0) {
+        try { fs.rmdirSync(subDir); fix.pruned.push(path.join(entry, sub)) } catch { /* ignore */ }
+      }
+    }
+    if (fix.moved.length > 0 || fix.pruned.length > 0 || fix.skipped.length > 0) fixes.push(fix)
+  }
+  // Videos sueltos en la raíz de películas: cada uno a su carpeta "Título (Año)".
+  for (const f of listFiles(root).filter((n) => VIDEO_RE.test(n))) {
+    const parsed = parseReleaseName(f)
+    const folder = safeSegment(parsed.year ? `${parsed.title} (${parsed.year})` : parsed.title)
+    const targetDir = path.join(root, folder)
+    if (fs.existsSync(path.join(targetDir, f))) continue
+    const fix = emptyGroup(folder)
+    moveInto('(raíz)', path.join(root, f), targetDir, folder, fix)
+    fixes.push(fix)
+  }
+  return fixes
+}
+
+/**
+ * Consolida películas y series y deja la estructura como la espera Jellyfin.
+ * Devuelve el resumen; el llamador decide si refrescar Jellyfin (changed=true).
  */
 export function healLibrary(moviesRoot: string, seriesRoot: string): HealResult {
-  const movies = moviesRoot ? healRoot(moviesRoot, 'movie') : []
-  const series = seriesRoot ? healRoot(seriesRoot, 'series') : []
+  const movies = moviesRoot ? [...healRoot(moviesRoot, 'movie'), ...enforceMovieLayout(moviesRoot)] : []
+  const series = seriesRoot ? [...healRoot(seriesRoot, 'series'), ...enforceSeriesLayout(seriesRoot)] : []
   const fixedMovies = moviesRoot ? repairMediaFolders(moviesRoot, 'movie', movies) : []
   const fixedSeries = seriesRoot ? repairMediaFolders(seriesRoot, 'series', series) : []
   const changed = [...movies, ...series].some((g) => g.moved.length > 0 || g.pruned.length > 0) || fixedMovies.length > 0 || fixedSeries.length > 0
