@@ -6,6 +6,8 @@ import os from 'os'
 import {
   seriesNameMatches,
   computeDestination,
+  parseReleaseName,
+  type ParsedRelease,
 } from '../../electron/media-layout'
 import { durationMatches, durationToleranceMin } from '../../electron/preflight'
 import { healLibrary } from '../../electron/library-heal'
@@ -50,6 +52,7 @@ export interface World {
   candidates?: Array<{ title: string; cached?: boolean }>
   usable?: Array<{ title: string; cached?: boolean }>
   inCooldown?: boolean
+  parsed?: ParsedRelease
 }
 
 export interface StepRun {
@@ -225,7 +228,7 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
   {
     pattern: /^resuelvo el destino del release "([^"]*)" para el tmdb id "(\d+)" del año "(\d+)"$/,
     fn: async ({ world }, release, tmdbId, year) => {
-      const isSeries = /[sS]\d{1,2}[eE]\d{1,3}/.test(release)
+      const isSeries = /\b[sS]\d{1,2}([eE]\d{1,3})?\b/.test(release)
       const settings = {
         destination_folder: '',
         movies_folder: world.moviesRoot!,
@@ -339,6 +342,27 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       const got = needPlan(world).adopt.map((d) => d.torrentId).join(', ')
       const want = expected.split(',').map((s) => s.trim()).filter(Boolean).join(', ')
       if (got !== want) throw new Error(`orden de adopción: ${got}\n            esperado:          ${want}`)
+    },
+  },
+  {
+    pattern: /^evalúo el nombre "([^"]*)"$/,
+    fn: ({ world }, name) => {
+      world.parsed = parseReleaseName(name)
+    },
+  },
+  {
+    pattern: /^el título del release es "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      if (!world.parsed) throw new Error('no se evaluó ningún nombre antes')
+      if (world.parsed.title !== expected) throw new Error(`título "${world.parsed.title}" · esperado "${expected}"`)
+    },
+  },
+  {
+    pattern: /^la temporada del release es "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      if (!world.parsed) throw new Error('no se evaluó ningún nombre antes')
+      const got = String(world.parsed.season ?? '')
+      if (got !== expected) throw new Error(`temporada ${got} · esperada ${expected}`)
     },
   },
   {

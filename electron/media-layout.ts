@@ -33,6 +33,14 @@ const TAG_RE = new RegExp(
 const SEASON_EP_RE = /\bS(\d{1,2})[Ee](\d{1,3})\b/i
 const YEAR_RE = /\b(19\d{2}|20\d{2})\b/
 const PAREN_YEAR_RE = /[\[\(]?\s*(19\d{2}|20\d{2})\s*[\]\)]?/
+/**
+ * Dónde termina el TÍTULO de un release: en el primer marcador de temporada
+ * (`S01E01`, `S01`, `1x05`), año o etiqueta de calidad. Sin esto, un nombre como
+ * `FBI.S01.DLMux.1080p.x264.AC3.ITA-ENG.Sub.ENG.by.quintrix` producía el "título"
+ * entero y la biblioteca se llenaba de carpetas fantasma
+ * (`FBI DLMux ITA ENG Sub ENG by quintrix/Season 1`).
+ */
+const RELEASE_CUT_RE = /\bS\d{1,2}\s*E\d{1,3}\b|\bS\d{1,2}\b|\b\d{1,2}x\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i
 
 function cleanToken(token: string): string {
   return token
@@ -48,16 +56,20 @@ export function parseReleaseName(name: string): ParsedRelease {
 
   const seMatch = SEASON_EP_RE.exec(raw)
   if (seMatch) season = parseInt(seMatch[1], 10)
+  if (season === undefined) {
+    // Pack de temporada sin episodio ("FBI.S01.COMPLETE...", "Season 2 1080p"):
+    // sin esto la temporada quedaba vacía y el destino acababa en "Season 1".
+    const pack = /\bS(\d{1,2})\b/.exec(raw) || /\b(?:season|temporada)[\s._-]*(\d{1,2})\b/i.exec(raw)
+    if (pack) season = parseInt(pack[1], 10)
+  }
 
   const yearMatch = YEAR_RE.exec(raw)
   if (yearMatch) year = parseInt(yearMatch[1], 10)
 
-  // Title = everything before the first season/episode marker or year token.
-  const cutIdx = seMatch
-    ? raw.search(SEASON_EP_RE)
-    : yearMatch
-      ? raw.search(YEAR_RE)
-      : -1
+  // Title = everything before the first season/episode marker, year or quality
+  // tag (mismo corte que releaseSeriesName: si no, las etiquetas que siguen a la
+  // temporada — "DLMux.ITA-ENG.Sub.ENG.by.quintrix" — acababan dentro del título).
+  const cutIdx = raw.search(RELEASE_CUT_RE)
   let titlePart = cutIdx > 0 ? raw.slice(0, cutIdx) : raw
 
   // Drop year-in-parens ("Movie (2021)") from the title part.
@@ -465,9 +477,7 @@ function normTokens(value: string): string[] {
 export function releaseSeriesName(name: string): string {
   let s = String(name || '').replace(/\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i, '')
   s = s.replace(/\[[^\]]*\]/g, ' ').replace(/\([^)]*\)/g, ' ')
-  const cut = s.search(
-    /\bS\d{1,2}\s*E\d{1,3}\b|\bS\d{1,2}\b|\b\d{1,2}x\d{1,3}\b|\b(19|20)\d{2}\b|\b(1080p|720p|2160p|480p|576p|4k|uhd|web-?dl|webrip|hdtv|bluray|blu-ray|brrip|x264|x265|h\.?264|h\.?265|hevc|av1|amzn|dsnp|atvp|nf|itunes|divx|xvid|dvdrip)\b/i,
-  )
+  const cut = s.search(RELEASE_CUT_RE)
   // El nombre del release empieza por la etiqueta (no hay título que comparar):
   // no se juzga, para no descartar por falta de datos.
   return cut >= 0 ? s.slice(0, cut) : s
