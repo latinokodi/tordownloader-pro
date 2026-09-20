@@ -10,6 +10,7 @@ import {
   type ParsedRelease,
 } from '../../electron/media-layout'
 import { durationMatches, durationToleranceMin } from '../../electron/preflight'
+import { meetsMinQuality, parseQualitySetting, type VideoQuality } from '../../electron/quality'
 import { healLibrary } from '../../electron/library-heal'
 import { orderTargetsForQueue, type QueueTarget } from '../../electron/monitor'
 import {
@@ -53,6 +54,8 @@ export interface World {
   usable?: Array<{ title: string; cached?: boolean }>
   inCooldown?: boolean
   parsed?: ParsedRelease
+  minQuality?: VideoQuality
+  qualityOk?: boolean
 }
 
 export interface StepRun {
@@ -363,6 +366,24 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       if (!world.parsed) throw new Error('no se evaluó ningún nombre antes')
       const got = String(world.parsed.season ?? '')
       if (got !== expected) throw new Error(`temporada ${got} · esperada ${expected}`)
+    },
+  },
+  {
+    pattern: /^la calidad mínima es "([^"]*)"$/,
+    fn: ({ world }, q) => { world.minQuality = parseQualitySetting(q) },
+  },
+  {
+    pattern: /^evalúo la calidad del release "([^"]*)"$/,
+    fn: ({ world }, name) => {
+      world.qualityOk = meetsMinQuality(name, (world.minQuality ?? 1080) as VideoQuality)
+    },
+  },
+  {
+    pattern: /^el release "(cumple|no cumple)"$/,
+    fn: ({ world }, expected) => {
+      if (world.qualityOk === undefined) throw new Error('no se evaluó ningún release antes')
+      const want = expected === 'cumple'
+      if (world.qualityOk !== want) throw new Error(want ? 'no cumplía la calidad mínima' : 'cumplía y debía descartarse')
     },
   },
   {

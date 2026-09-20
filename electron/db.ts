@@ -155,6 +155,7 @@ export function initDB(): void {
     `ALTER TABLE settings ADD COLUMN max_grab_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE settings ADD COLUMN max_movie_size_gb INTEGER DEFAULT 0`,
     `ALTER TABLE settings ADD COLUMN max_series_size_gb INTEGER DEFAULT 0`,
+    `ALTER TABLE settings ADD COLUMN min_video_quality VARCHAR DEFAULT '1080p'`,
     `ALTER TABLE grab_history ADD COLUMN dest_folder VARCHAR DEFAULT ''`,
     `ALTER TABLE grab_history ADD COLUMN file_name VARCHAR DEFAULT ''`,
     `CREATE TABLE IF NOT EXISTS media_folders (
@@ -215,6 +216,8 @@ export interface Settings {
   jellyfin_api_key: string;
   /** Descargas simultáneas máximas (cola de backfill y worker). */
   max_concurrent_downloads: number;
+  /** Calidad mínima aceptable de un release automático ('1080p' | '720p' | 'any'). */
+  min_video_quality: string;
 }
 
 export interface Download {

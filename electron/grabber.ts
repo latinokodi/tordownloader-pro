@@ -14,6 +14,7 @@ import { eventBus } from './event-bus'
 import { tmdbDetail } from './tmdb'
 import { isVideoName, probeAddedTorrent, type RemoteFile } from './preflight'
 import { getAccountStatus, isInCooldown, cooldownFilter, cooldownLabel } from './debrid-status'
+import { meetsMinQuality, parseQualitySetting, qualityLabel } from './quality'
 
 export type GrabLanguage = 'latino' | 'english'
 
@@ -739,6 +740,18 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     }
 
     const type: 'movie' | 'series' = target.kind === 'movie' ? 'movie' : 'series'
+    // Calidad mínima (spec B11): el usuario fijó 1080p; 720p y menores no se
+    // bajan. Sin resolución en el nombre no se descarta (no bloquear por falta
+    // de datos). Los añadidos a mano los elige el usuario y no pasan por aquí.
+    const minQuality = parseQualitySetting(settings.min_video_quality)
+    if (minQuality > 0) {
+      const below = results.filter((r) => !meetsMinQuality(String(r.title || ''), minQuality))
+      if (below.length > 0) {
+        results = results.filter((r) => meetsMinQuality(String(r.title || ''), minQuality))
+        console.debug(`[grab] ${phase}: ${below.length} release(s) por debajo de ${qualityLabel(minQuality)} descartados ("${target.title}")`)
+        if (results.length === 0) continue
+      }
+    }
     let candidates = rankCandidates(results, target).slice(0, MAX_CANDIDATES_PER_PHASE)
     if (candidates.length === 0) {
       console.debug(`[grab] ${phase}: ${results.length} resultado(s) pero ninguno válido para el objetivo`)
