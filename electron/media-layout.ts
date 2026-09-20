@@ -30,7 +30,7 @@ const TAG_RE = new RegExp(
   'gi',
 )
 
-const SEASON_EP_RE = /\bS(\d{1,2})[Ee](\d{1,3})\b/
+const SEASON_EP_RE = /\bS(\d{1,2})[Ee](\d{1,3})\b/i
 const YEAR_RE = /\b(19\d{2}|20\d{2})\b/
 const PAREN_YEAR_RE = /[\[\(]?\s*(19\d{2}|20\d{2})\s*[\]\)]?/
 

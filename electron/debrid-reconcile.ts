@@ -7,7 +7,7 @@
 // spec/features/debrid-reconcile.feature); aquí abajo se ejecuta contra TorBox.
 import { addDownload, countPipelineDownloads, getDB, getSettings } from './db'
 import { TorboxAPI } from './torbox'
-import { parseReleaseName, seriesNameMatches, getAltTitlesCached } from './media-layout'
+import { parseReleaseName, seriesNameMatches, getAltTitlesCached, computeDestination } from './media-layout'
 import { isGrabbed, listWatchlist } from './watchlist'
 import { eventBus } from './event-bus'
 
@@ -126,6 +126,24 @@ export interface ReconcileResult {
 
 const lastReconcile = { at: 0 }
 
+/**
+ * Carpeta destino de lo adoptado. Se calcula desde el TÍTULO EMPAREJADO (tmdb id
+ * y año del título monitorizado), nunca desde el nombre del torrent: hay releases
+ * cuyo nombre es un simple fichero en minúsculas ("fbi.s07e20.1080p.web.h264-x.mkv")
+ * y de ahí salía una carpeta fantasma ("fbi s07e20 web successfulcrab mkv/Season 1")
+ * con el episodio dentro. Lo destapó spec/features/debrid-reconcile.feature.
+ */
+export async function adoptionDestination(
+  settings: { destination_folder: string; movies_folder: string; series_folder: string; tmdb_api_key: string },
+  decision: ReconcileDecision,
+  watched: WatchedTitle,
+): Promise<{ root: string; folder: string; season: number | undefined }> {
+  return computeDestination(settings, decision.name, decision.mediaType === 'movie' ? 'movie' : 'series', {
+    tmdbId: watched.tmdbId,
+    year: watched.year,
+  })
+}
+
 /** ¿Toca reconciliar otra vez? (evita golpear la API del debrid cada tick). */
 export function reconcileDue(intervalMinutes = 15): boolean {
   return Date.now() - lastReconcile.at > intervalMinutes * 60_000
@@ -188,6 +206,10 @@ export async function reconcileDebrid(opts: { limit?: number; dry?: boolean } = 
   for (const d of plan.adopt.slice(0, limit)) {
     if (opts.dry) { adopted++; continue }
     try {
+      // La carpeta se decide aquí, con el título del objetivo: el worker usa
+      // dest_folder tal cual y no tiene que adivinar nada del nombre del torrent.
+      const watchedTitle = watched.find((w) => w.tmdbId === d.tmdbId)
+      const dest = watchedTitle ? await adoptionDestination(settings, d, watchedTitle) : null
       addDownload({
         torbox_id: String(d.torrentId),
         name: d.name.slice(0, 300),
@@ -196,7 +218,7 @@ export async function reconcileDebrid(opts: { limit?: number; dry?: boolean } = 
         local_status: 'pending',
         service: 'torbox',
         type: d.mediaType,
-        dest_folder: null,
+        dest_folder: dest ? `${dest.root}/${dest.folder}` : null,
       } as any)
       adopted++
     } catch (e: any) {

@@ -12,6 +12,7 @@ import { healLibrary } from '../../electron/library-heal'
 import { orderTargetsForQueue, type QueueTarget } from '../../electron/monitor'
 import {
   planReconcile,
+  adoptionDestination,
   type DebridTorrent,
   type ReconcilePlan,
   type WatchedTitle,
@@ -328,6 +329,23 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       const got = needPlan(world).adopt.map((d) => d.torrentId).join(', ')
       const want = expected.split(',').map((s) => s.trim()).filter(Boolean).join(', ')
       if (got !== want) throw new Error(`orden de adopción: ${got}\n            esperado:          ${want}`)
+    },
+  },
+  {
+    pattern: /^el destino del torrent (\d+) es "([^"]*)"$/,
+    fn: async ({ world }, id, expected) => {
+      const d = needPlan(world).adopt.find((x) => x.torrentId === Number(id))
+      if (!d) throw new Error(`el torrent ${id} no está entre los adoptados`)
+      const watched = world.watched?.find((w) => w.tmdbId === d.tmdbId)
+      if (!watched) throw new Error('no se encontró el título monitorizado del adoptado')
+      const settings = {
+        destination_folder: '',
+        movies_folder: world.moviesRoot!,
+        series_folder: world.seriesRoot!,
+        tmdb_api_key: process.env.TMDB_API_KEY || '',
+      }
+      const dest = await adoptionDestination(settings, d, watched)
+      if (dest.folder !== expected) throw new Error(`destino de adopción ${dest.folder} · esperado ${expected}`)
     },
   },
 ]

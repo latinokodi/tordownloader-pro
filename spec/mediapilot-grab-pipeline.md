@@ -204,6 +204,12 @@ puede bajar.
   debrid aún está bajando (`downloading`/`metadl`); dentro de cada grupo, orden
   ascendente de temporada/episodio. Los estados sin contenido (`checking`) se
   descartan hasta que el debrid tenga algo.
+- La carpeta destino de lo adoptado se calcula **desde el título emparejado** (tmdb
+  id y año del título monitorizado), nunca desde el nombre del torrent: hay
+  releases cuyo nombre es un fichero en minúsculas
+  (`fbi.s07e20.1080p.web.h264-successfulcrab[EZTVx.to].mkv`) y de ahí salía una
+  carpeta fantasma (`fbi s07e20 web successfulcrab mkv/Season 1`) con el episodio
+  dentro. El marcador `sxxeyy` se reconoce sin importar mayúsculas.
 - Se ejecuta al arrancar el servicio, cada 15 min desde el monitor, y a mano con
   `POST /api/debrid/reconcile`. Respeta `max_concurrent_downloads` al bajar (el
   tope lo aplica el worker) y registra el resumen con el motivo de cada descarte.

@@ -105,6 +105,25 @@ Feature: Adopción de lo que el debrid ya tiene
     When reconcilio el debrid
     Then el orden de adopción es "100873013, 100872761, 100863270"
 
+  Scenario: Un release en minúsculas se interpreta igual que en mayúsculas
+    Given una biblioteca temporal
+    And en la serie "FBI (2018)" existe la carpeta "Season 7"
+    When resuelvo el destino del release "fbi.s07e20.1080p.web.h264-successfulcrab[EZTVx.to].mkv" para el tmdb id "80748" del año "2018"
+    Then la carpeta de destino es "FBI (2018)/Season 7"
+
+  Scenario: El destino de lo adoptado NO se adivina del nombre del torrent
+    Given una biblioteca temporal
+    And en la serie "FBI (2018)" existe la carpeta "Season 7"
+    And estos títulos monitorizados
+      | tmdb_id | tipo   | títulos | año  |
+      | 80748   | series | FBI     | 2018 |
+    And en el debrid hay estos torrents
+      | id        | nombre                                                  | estado | tamaño_gb |
+      | 100872761 | fbi.s07e20.1080p.web.h264-successfulcrab[EZTVx.to].mkv | cached | 2.89      |
+    When reconcilio el debrid
+    Then se adopta el torrent 100872761 como "FBI" "S07E20"
+    And el destino del torrent 100872761 es "FBI (2018)/Season 7"
+
   Scenario: Una película cacheada de un título monitorizado que falta se adopta
     Given estos títulos monitorizados
       | tmdb_id | tipo   | títulos    | año  |
