@@ -386,7 +386,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
             poster: str(body.poster, 1000),
             backdrop: str(body.backdrop, 1000),
             imdb_id: str(body.imdb_id, 20),
-            language_profile: normalizeLanguageProfile(body.language_profile),
+            language_profile: normalizeLanguageProfile(body.language_profile, getSettings().language_profile),
             backfill: body.backfill,
           })
           eventBus.emit('watchlist-updated', { action: 'add', item: result.item })
@@ -454,7 +454,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
         const body = await readBody(req)
         const patch: { monitored?: boolean; language_profile?: any; imdb_id?: string; backfill?: any } = {}
         if (typeof body.monitored === 'boolean') patch.monitored = body.monitored
-        if (body.language_profile !== undefined) patch.language_profile = normalizeLanguageProfile(body.language_profile)
+        if (body.language_profile !== undefined) patch.language_profile = normalizeLanguageProfile(body.language_profile, getSettings().language_profile)
         if (body.backfill !== undefined) patch.backfill = body.backfill
         if (typeof body.imdb_id === 'string' && body.imdb_id.trim()) patch.imdb_id = body.imdb_id.trim().slice(0, 20)
         const item = updateWatchlistItem(id, patch)

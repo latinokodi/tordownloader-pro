@@ -11,7 +11,7 @@
 //  - A target stops being wanted once grabbed or the item is removed.
 import { getSettings, updateSettings, countPipelineDownloads, type WatchlistItem, type BackfillScope } from './db'
 import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem, englishGrabbedRows, markReplacePending, latestGrabFor } from './watchlist'
-import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, nextDelayMinutes, type MonitorAttempt } from './attempts'
+import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, shouldDeferAttempt, nextAttemptAfterFailure, type MonitorAttempt } from './attempts'
 import { grab, findLatinoForUpgrade, type GrabTarget, type GrabOutcome } from './grabber'
 import { tmdbDetail, tmdbSeason } from './tmdb'
 import { setupSearchEnv } from './python-run'
@@ -181,7 +181,7 @@ async function seasonWantedEpisodes(
 }
 
 /** One grab attempt for a concrete wanted target, with backoff bookkeeping. */
-async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget): Promise<'grabbed' | 'waiting' | 'error'> {
+async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget, opts: { force?: boolean } = {}): Promise<'grabbed' | 'waiting' | 'error'> {
   const isMovie = target.kind === 'movie'
   const season = isMovie ? null : (target.season ?? null)
   const episode = isMovie ? null : (target.episode ?? null)
@@ -234,23 +234,30 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
   }
 
   // Missed (no source) or failed — schedule the next attempt with backoff.
-  const delayMin = nextDelayMinutes(attemptNumber)
-  recordAttempt(item.tmdb_id, item.media_type, season, episode, isMovie ? 'movie' : 'episode', profile, delayMin)
+  // Una comprobación manual (force) que falla NO consume intento ni toca la
+  // ventana: la fila queda como estaba (spec B18, regla 2).
+  const delayMin = nextAttemptAfterFailure(Boolean(opts.force), attemptNumber)
+  if (delayMin === undefined) {
+    log(`⌕ ${label} comprobación manual: sin fuente ahora mismo — no consume intento (la ventana de reintento sigue igual)`)
+  } else {
+    recordAttempt(item.tmdb_id, item.media_type, season, episode, isMovie ? 'movie' : 'episode', profile, delayMin)
+  }
+  const retryText = delayMin === undefined ? 'sin cambiar la ventana de reintento' : `reintento en ${delayMin} min`
   // El latino ya está publicado en la web (sólo descarga directa): NO es una
   // falta de fuente, es una espera deliberada a que salga el torrent latino.
   if (outcome.latinoDdl) {
     const ddl = (outcome.latinoDdl.ddl || []).slice(0, 3).join(', ')
-    log(`⏳ ${label} latino ya publicado en Cinecalidad${ddl ? ` (${ddl})` : ''} — sólo descarga directa, no se baja inglés; reintento en ${delayMin} min`)
+    log(`⏳ ${label} latino ya publicado en Cinecalidad${ddl ? ` (${ddl})` : ''} — sólo descarga directa, no se baja inglés; ${retryText}`)
     return 'waiting'
   }
   if (outcome.status === 'error') {
-    log(`✗ ${label} error: ${outcome.error} — reintento en ${delayMin} min`)
+    log(`✗ ${label} error: ${outcome.error} — ${retryText}`)
     return 'error'
   }
   if (attemptNumber === 1) {
-    log(`— ${label} sin fuente latino/EN todavía — reintento en ${delayMin} min`)
+    log(`— ${label} sin fuente latino/EN todavía — ${retryText}`)
   } else {
-    console.debug(`[Monitor] ${label}: aún sin fuente (intento ${attemptNumber}) — próxima ventana en ${delayMin} min`)
+    console.debug(`[Monitor] ${label}: aún sin fuente (intento ${attemptNumber}) — ${retryText}`)
   }
   return 'waiting'
 }
@@ -295,7 +302,10 @@ async function fetchDetailCached(item: WatchlistItem): Promise<any | null> {
   return cached?.detail ?? null
 }
 
-async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waiting: number; deferred: number; errors: number }> {
+async function checkItem(
+  item: WatchlistItem,
+  opts: { force?: boolean } = {},
+): Promise<{ grabbed: number; waiting: number; deferred: number; errors: number }> {
   const res = { grabbed: 0, waiting: 0, deferred: 0, errors: 0 }
   const detail = await fetchDetailCached(item)
   if (!detail) {
@@ -328,7 +338,7 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
       if (t.tracked) {
         const att = getAttempt(item.tmdb_id, 'movie', null, null)
         if (!att) continue // row vanished — nothing to retry
-        if (att.next_attempt && att.next_attempt > new Date().toISOString()) {
+        if (shouldDeferAttempt(att, new Date().toISOString(), opts.force)) {
           res.deferred += 1
           continue
         }
@@ -337,7 +347,7 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
           continue
         }
       }
-      const state = await attemptTarget(item, detail, t)
+      const state = await attemptTarget(item, detail, t, { force: opts.force })
       if (state === 'grabbed') res.grabbed += 1
       else if (state === 'error') res.errors += 1
       else res.waiting += 1
@@ -361,7 +371,7 @@ async function checkItem(item: WatchlistItem): Promise<{ grabbed: number; waitin
   } else {
     console.debug(`[Monitor] "${item.title}" [${seasonTag} · alcance ${scope}] — sin objetivos (idle)`)
   }
-  await attemptTargets(item, detail, tickTargets, res)
+  await attemptTargets(item, detail, tickTargets, res, { force: opts.force })
   // Idle series (nothing wanted under its scope) contribute nothing.
   updateWatchlistItem(item.id, { last_checked: new Date().toISOString() })
   return res
@@ -468,7 +478,7 @@ async function attemptTargets(
   detail: any,
   targets: DueTarget[],
   res: { grabbed: number; waiting: number; deferred: number; errors: number },
-  opts: { continuous?: boolean } = {},
+  opts: { continuous?: boolean; force?: boolean } = {},
 ): Promise<void> {
   const maxConcurrent = Math.max(1, Number(getSettings().max_concurrent_downloads) || 3)
   for (const t of targets) {
@@ -485,7 +495,7 @@ async function attemptTargets(
     }
     if (t.tracked) {
       const att = getAttempt(item.tmdb_id, item.media_type, t.season ?? null, t.episode ?? null)
-      if (att && att.next_attempt && att.next_attempt > new Date().toISOString()) {
+      if (shouldDeferAttempt(att, new Date().toISOString(), opts.force)) {
         res.deferred += 1
         continue
       }
@@ -497,7 +507,7 @@ async function attemptTargets(
     }
     inFlightTargets.add(key)
     try {
-      const state = await attemptTarget(item, detail, t)
+      const state = await attemptTarget(item, detail, t, { force: opts.force })
       if (state === 'grabbed') res.grabbed += 1
       else if (state === 'error') res.errors += 1
       else res.waiting += 1
@@ -614,8 +624,8 @@ export function forceCheckItem(itemId: number): boolean {
     running = true
     try {
       log(`force check — "${item.title}"`)
-      const res = await checkItem(item)
-      log(`force check done — ${item.title}: grabbed=${res.grabbed} waiting=${res.waiting} errors=${res.errors}`)
+      const res = await checkItem(item, { force: true })
+      log(`force check done — ${item.title}: grabbed=${res.grabbed} waiting=${res.waiting} errors=${res.errors}${res.deferred ? ` diferidos=${res.deferred}` : ''}`)
       updateSettings({ last_monitor_run: new Date().toISOString() })
       eventBus.emit('monitor-updated', { ...getMonitorStatus(), lastSummary })
     } finally {

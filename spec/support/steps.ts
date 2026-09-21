@@ -27,6 +27,15 @@ import {
   type AccountStatus,
 } from '../../electron/debrid-status'
 import { episodeFromFileName, reorderedAudioIndexes } from '../../electron/postprocess'
+import { shouldDeferAttempt, nextAttemptAfterFailure } from '../../electron/attempts'
+import {
+  normalizeLanguageProfile,
+  addWatchlistItem,
+  updateWatchlistItem,
+  listWatchlist,
+  removeWatchlistItem,
+} from '../../electron/watchlist'
+import { getSettings, updateSettings } from '../../electron/db'
 
 export interface World {
   titles?: string[]
@@ -66,6 +75,13 @@ export interface World {
   staleLimit?: number
   staleRelease?: boolean
   seasonCounts?: Record<string, number>
+  pendingAttempt?: { next_attempt: string; attempts: number }
+  deferred?: boolean
+  nextDelay?: number
+  defaultProfile?: string
+  normalizedProfile?: string
+  prevDefaultProfile?: string
+  testItemId?: number
 }
 
 export interface StepRun {
@@ -556,6 +572,113 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
         return
       }
       throw new Error(`estado esperado desconocido: ${esperado}`)
+    },
+  },
+
+  // ── B18 · comprobación manual ("Verificar ahora") ───────────────────────
+  {
+    pattern: /^un intento pendiente con próxima fecha "([^"]*)" y (\d+) intentos$/,
+    fn: ({ world }, next, attempts) => {
+      world.pendingAttempt = { next_attempt: next, attempts: Number(attempts) }
+    },
+  },
+  {
+    // El "reloj" lo fija el paso compartido con B10 ("la hora actual es ..."),
+    // que guarda milisegundos en `world.now`.
+    pattern: /^compruebo ese intento (sin forzar|forzando)$/,
+    fn: ({ world }, mode) => {
+      if (!world.pendingAttempt) throw new Error('no hay intento pendiente en este escenario')
+      if (typeof world.now !== 'number') throw new Error('falta fijar la hora actual')
+      const nowIso = new Date(world.now).toISOString()
+      world.deferred = shouldDeferAttempt(world.pendingAttempt, nowIso, mode === 'forzando')
+    },
+  },
+  {
+    pattern: /^el intento (queda diferido|no queda diferido)$/,
+    fn: ({ world }, expected) => {
+      const want = expected === 'queda diferido'
+      if (world.deferred !== want) {
+        throw new Error(`deferred=${world.deferred} · esperado ${want} (true = se difiere sin intentar, false = se intenta)`)
+      }
+    },
+  },
+  {
+    pattern: /^calculo el próximo reintento (sin forzar|forzando) tras el intento (\d+)$/,
+    fn: ({ world }, mode, n) => {
+      world.nextDelay = nextAttemptAfterFailure(mode === 'forzando', Number(n))
+    },
+  },
+  {
+    pattern: /^el próximo reintento es (ninguno|\d+)$/,
+    fn: ({ world }, expected) => {
+      const want = expected === 'ninguno' ? undefined : Number(expected)
+      if (world.nextDelay !== want) {
+        throw new Error(`próximo reintento ${String(world.nextDelay)} · esperado ${expected} (ninguno = no se toca la ventana)`)
+      }
+    },
+  },
+
+  // ── B19 · idioma por defecto al añadir un título ────────────────────────
+  {
+    pattern: /^un ajuste de idioma por defecto "([^"]*)"$/,
+    fn: ({ world }, value) => {
+      world.defaultProfile = value
+    },
+  },
+  {
+    pattern: /^normalizo el perfil enviado "(.*)"$/,
+    fn: ({ world }, sent) => {
+      world.normalizedProfile = normalizeLanguageProfile(sent || undefined, world.defaultProfile)
+    },
+  },
+  {
+    pattern: /^el perfil resultante es "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      if (world.normalizedProfile !== expected) {
+        throw new Error(`perfil resultante ${String(world.normalizedProfile)} · esperado ${expected}`)
+      }
+    },
+  },
+  {
+    pattern: /^que el ajuste de idioma por defecto de la app es "([^"]*)"$/,
+    fn: ({ world }, value) => {
+      world.prevDefaultProfile = getSettings().language_profile
+      updateSettings({ language_profile: normalizeLanguageProfile(value) })
+    },
+  },
+  {
+    pattern: /^añado el título de prueba "([^"]*)" sin perfil explícito$/,
+    fn: ({ world }, title) => {
+      // tmdb_id inexistente: no hay detalle ni objetivos → no dispara descargas.
+      const { item } = addWatchlistItem({ tmdb_id: 999999001, media_type: 'series', title, backfill: 'new' })
+      world.testItemId = item.id
+    },
+  },
+  {
+    pattern: /^el listado lo devuelve con el perfil "([^"]*)"$/,
+    fn: ({ world }, expected) => {
+      const item = listWatchlist().find((i) => i.id === world.testItemId)
+      if (!item) throw new Error('el título de prueba no aparece en el listado')
+      if (item.language_profile !== expected) {
+        throw new Error(`el listado devuelve ${item.language_profile} · esperado ${expected}`)
+      }
+    },
+  },
+  {
+    pattern: /^en el título de prueba pongo el perfil "([^"]*)"$/,
+    fn: ({ world }, profile) => {
+      if (!world.testItemId) throw new Error('no hay título de prueba en este escenario')
+      updateWatchlistItem(world.testItemId, { language_profile: normalizeLanguageProfile(profile) })
+    },
+  },
+  {
+    pattern: /^borro el título de prueba y restauro el ajuste "([^"]*)"$/,
+    fn: ({ world }, restore) => {
+      const id = world.testItemId
+      if (id) removeWatchlistItem(id)
+      updateSettings({ language_profile: normalizeLanguageProfile(restore) })
+      if (id && listWatchlist().some((i) => i.id === id)) throw new Error('el título de prueba sigue en el listado')
+      if (getSettings().language_profile !== restore) throw new Error(`el ajuste quedó en ${getSettings().language_profile}`)
     },
   },
 ]

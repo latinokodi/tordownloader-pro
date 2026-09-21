@@ -6,8 +6,15 @@ import { deleteAttemptsForTmdb } from './attempts'
 
 export const LANGUAGE_PROFILES: LanguageProfile[] = ['latino_first', 'latino_only', 'english_first']
 
-export function normalizeLanguageProfile(v: unknown): LanguageProfile {
-  return LANGUAGE_PROFILES.includes(v as LanguageProfile) ? (v as LanguageProfile) : 'latino_first'
+/**
+ * Perfil de idioma válido (spec B19). Un valor explícito y válido SIEMPRE gana;
+ * si no viene (o viene basura) se usa `fallback` — el ajuste "Idioma por defecto
+ * para títulos nuevos" de Ajustes, y sólo si tampoco ese es válido, latino_first.
+ */
+export function normalizeLanguageProfile(v: unknown, fallback?: unknown): LanguageProfile {
+  if (LANGUAGE_PROFILES.includes(v as LanguageProfile)) return v as LanguageProfile
+  if (LANGUAGE_PROFILES.includes(fallback as LanguageProfile)) return fallback as LanguageProfile
+  return 'latino_first'
 }
 
 export function normalizeMediaType(v: unknown): 'movie' | 'series' | null {
@@ -80,7 +87,7 @@ export function addWatchlistItem(input: AddWatchlistInput): { item: WatchlistIte
   const existing = findWatchlistItem(tmdbId, mediaType)
   if (existing) return { item: existing, created: false }
 
-  const profile = normalizeLanguageProfile(input.language_profile || getSettings().language_profile)
+  const profile = normalizeLanguageProfile(input.language_profile, getSettings().language_profile)
   const backfill = input.media_type === 'series' ? normalizeBackfill(input.backfill) : 'new'
   const info = db.prepare(
     `INSERT INTO watchlist (tmdb_id, media_type, title, year, overview, poster, backdrop, imdb_id, language_profile, backfill)
@@ -117,7 +124,7 @@ export function updateWatchlistItem(id: number, patch: Partial<Pick<WatchlistIte
       values.push(value ? 1 : 0)
     } else if (key === 'language_profile') {
       fields.push('language_profile = ?')
-      values.push(normalizeLanguageProfile(value))
+      values.push(normalizeLanguageProfile(value, getSettings().language_profile))
     } else if (key === 'backfill') {
       fields.push('backfill = ?')
       values.push(normalizeBackfill(value))

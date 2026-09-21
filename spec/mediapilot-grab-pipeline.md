@@ -275,6 +275,39 @@ duplicar, que es lo único que se puede bajar cuando el debrid está en cooldown
 los releases sueltos tienen el swarm muerto. Si la temporada ya tiene algo, se
 descartan los packs y se siguen bajando episodios sueltos.
 
+### B18 · La comprobación manual intenta de verdad (y no cobra el intento)
+
+El botón **Verificar ahora** (Panel y Seguimiento) existe para desatascar un
+título a mano: el usuario ve que falta un capítulo y quiere intentarlo YA.
+
+- Regla 1: una comprobación manual **ignora la ventana de reintento** (backoff).
+  Un objetivo en espera hasta T+12 h se intenta igualmente; `deferred` no sube.
+- Regla 2: si el intento forzado **falla**, **no consume intento ni alarga la
+  espera**: la fila de `monitor_attempts` queda como estaba (misma fecha de
+  `next_attempt`, mismo contador). Si acierta, se borra la fila como siempre.
+  Motivo: un clic de más no puede empujar el episodio a mañana.
+- Regla 3: el forzado no cambia el comportamiento normal del tick de 30 min ni
+  de la cola de backfill: sólo el camino manual salta la ventana.
+
+Criterio de éxito: con Linternas S01E06 esperando hasta `2026-09-21T06:49:28Z`
+(5 intentos), pulsar "Verificar ahora" a las 03:16 produce `→ intento 6` en el
+log (antes: `grabbed=0 waiting=0 deferred=1`, sin intentar nada).
+
+### B19 · Idioma por defecto también al añadir desde la interfaz
+
+El Panel tiene un ajuste **"Idioma por defecto para títulos nuevos"** que se
+guarda en `settings.language_profile`.
+
+- Regla 1: al añadir un título, si el cliente **no manda** `language_profile` (o
+  manda un valor inválido), se aplica ese ajuste — no `latino_first` fijo.
+- Regla 2: el perfil **elegido explícitamente** en el alta siempre gana.
+- Regla 3: el perfil guardado es el que devuelve `GET /api/watchlist` y el que
+  muestra el desplegable de cada tarjeta en Seguimiento: lo que se elige al
+  añadir es lo que se ve en la lista.
+- Regla 4 (frontend): el desplegable del modal de añadir arranca con el valor del
+  ajuste, no con "Latino primero" fijo. Sin esto, elegir "Solo latino" como
+  predeterminado y añadir desde Seguimiento guardaba `latino_first`.
+
 ## 9. Success criteria (verificables)
 
 1. `npm run spec` en verde (93 escenarios), con las conductas B1–B17 cubiertas.

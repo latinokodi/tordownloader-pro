@@ -32,6 +32,35 @@ export function nextDelayMinutes(attemptNumber: number): number {
   return steps[Math.min(attemptNumber, steps.length) - 1] ?? 1440
 }
 
+/**
+ * ¿Hay que esperar antes de intentar este objetivo? (spec B18)
+ *
+ * Con `force` (comprobación manual, "Verificar ahora") nunca se difiere: el
+ * botón existe para desatascar a mano un capítulo que está en su ventana de
+ * reintento. Antes, un forzado devolvía `deferred:1` sin intentar nada y el
+ * episodio parecía muerto.
+ */
+export function shouldDeferAttempt(
+  att: { next_attempt?: string | null } | null | undefined,
+  nowIso: string,
+  force = false,
+): boolean {
+  if (force) return false
+  const next = att?.next_attempt
+  if (!next) return false
+  return next > nowIso
+}
+
+/**
+ * Minutos hasta el próximo reintento tras un fallo (spec B18). `undefined`
+ * significa NO programar reintento: una comprobación manual que falla no consume
+ * intento ni alarga la espera — la fila de `monitor_attempts` queda como estaba,
+ * así que un clic de más no puede empujar el episodio a mañana.
+ */
+export function nextAttemptAfterFailure(force: boolean, attemptNumber: number): number | undefined {
+  return force ? undefined : nextDelayMinutes(attemptNumber)
+}
+
 function iso(): string {
   return new Date().toISOString()
 }
