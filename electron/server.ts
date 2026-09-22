@@ -452,10 +452,12 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
         const id = Math.trunc(Number(api.split('/')[1]))
         if (!Number.isFinite(id) || !getWatchlistItem(id)) return sendJson(res, 404, { success: false, error: 'Watchlist item not found' })
         const body = await readBody(req)
-        const patch: { monitored?: boolean; language_profile?: any; imdb_id?: string; backfill?: any } = {}
+        const patch: { monitored?: boolean; language_profile?: any; imdb_id?: string; backfill?: any; poster?: string; backdrop?: string } = {}
         if (typeof body.monitored === 'boolean') patch.monitored = body.monitored
         if (body.language_profile !== undefined) patch.language_profile = normalizeLanguageProfile(body.language_profile, getSettings().language_profile)
         if (body.backfill !== undefined) patch.backfill = body.backfill
+        if (typeof body.poster === 'string') patch.poster = body.poster
+        if (typeof body.backdrop === 'string') patch.backdrop = body.backdrop
         if (typeof body.imdb_id === 'string' && body.imdb_id.trim()) patch.imdb_id = body.imdb_id.trim().slice(0, 20)
         const item = updateWatchlistItem(id, patch)
         eventBus.emit('watchlist-updated', { action: 'update', item })

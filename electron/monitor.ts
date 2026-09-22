@@ -12,6 +12,7 @@
 import { getSettings, updateSettings, countPipelineDownloads, type WatchlistItem, type BackfillScope } from './db'
 import { listWatchlist, updateWatchlistItem, isGrabbed, getWatchlistItem, englishGrabbedRows, markReplacePending, latestGrabFor } from './watchlist'
 import { getAttempt, attemptsForTitle, recordAttempt, deleteAttempt, shouldDeferAttempt, nextAttemptAfterFailure, type MonitorAttempt } from './attempts'
+import { posterBackfillPatch } from './posters'
 import { grab, findLatinoForUpgrade, type GrabTarget, type GrabOutcome } from './grabber'
 import { tmdbDetail, tmdbSeason } from './tmdb'
 import { setupSearchEnv } from './python-run'
@@ -314,6 +315,10 @@ async function checkItem(
     return res
   }
   if (!item.imdb_id && detail.imdb_id) updateWatchlistItem(item.id, { imdb_id: detail.imdb_id })
+  // Póster/fondo: si faltan, se rellenan con lo que trae TMDB (spec B20, regla 3).
+  // Nunca pisa lo que ya había.
+  const posterPatch = posterBackfillPatch(item, detail)
+  if (Object.keys(posterPatch).length) updateWatchlistItem(item.id, posterPatch)
   await refreshNextEpisode(item, detail)
 
   if (item.media_type === 'movie') {

@@ -308,6 +308,27 @@ guarda en `settings.language_profile`.
   ajuste, no con "Latino primero" fijo. Sin esto, elegir "Solo latino" como
   predeterminado y añadir desde Seguimiento guardaba `latino_first`.
 
+### B20 · Pósters de Seguimiento siempre utilizables
+
+El frontend pinta `<img src={item.poster}>` sin componer nada, así que el valor
+guardado tiene que ser una **URL absoluta**. Dos fallos reales que dejaban huecos
+en la parrilla:
+
+- un título añadido por API sin el campo del póster (vacío);
+- un título con la ruta relativa de TMDB (`/ia3jqovf….jpg`) → el navegador la
+  pide a MediaPilot y recibe 404.
+
+Reglas:
+- Regla 1: al guardar (alta o actualización) el póster y el fondo se normalizan a
+  URL absoluta de TMDB; una URL ya absoluta no se toca.
+- Regla 2: `poster` y `backdrop` son campos actualizables (lo necesario para
+  poder rellenarlos después).
+- Regla 3: al comprobar un título, si le falta el póster o el fondo, se rellenan
+  desde el detalle de TMDB; **nunca se pisa** lo que ya había.
+
+Criterio de éxito: `GET /api/watchlist` no devuelve ningún póster relativo ni
+vacío en los títulos que existen en TMDB, y cada URL responde 200.
+
 ## 9. Success criteria (verificables)
 
 1. `npm run spec` en verde (93 escenarios), con las conductas B1–B17 cubiertas.

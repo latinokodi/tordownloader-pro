@@ -3,6 +3,7 @@
 // server.ts exposes these over HTTP.
 import { getDB, getSettings, type WatchlistItem, type GrabHistoryRow, type LanguageProfile, type BackfillScope } from './db'
 import { deleteAttemptsForTmdb } from './attempts'
+import { normalizePosterUrl, BACKDROP_SIZE, POSTER_SIZE } from './posters'
 
 export const LANGUAGE_PROFILES: LanguageProfile[] = ['latino_first', 'latino_only', 'english_first']
 
@@ -98,8 +99,8 @@ export function addWatchlistItem(input: AddWatchlistInput): { item: WatchlistIte
     String(input.title).slice(0, 500),
     String(input.year || '').slice(0, 10),
     String(input.overview || '').slice(0, 2000),
-    String(input.poster || '').slice(0, 1000),
-    String(input.backdrop || '').slice(0, 1000),
+    normalizePosterUrl(input.poster, POSTER_SIZE).slice(0, 1000),
+    normalizePosterUrl(input.backdrop, BACKDROP_SIZE).slice(0, 1000),
     String(input.imdb_id || '').slice(0, 20),
     profile,
     backfill,
@@ -108,7 +109,7 @@ export function addWatchlistItem(input: AddWatchlistInput): { item: WatchlistIte
   return { item, created: true }
 }
 
-const UPDATEABLE_KEYS = ['monitored', 'language_profile', 'backfill', 'imdb_id', 'next_episode', 'last_checked'] as const
+const UPDATEABLE_KEYS = ['monitored', 'language_profile', 'backfill', 'imdb_id', 'next_episode', 'last_checked', 'poster', 'backdrop'] as const
 
 export function updateWatchlistItem(id: number, patch: Partial<Pick<WatchlistItem, (typeof UPDATEABLE_KEYS)[number]>>): WatchlistItem | undefined {
   const db = getDB()
@@ -125,6 +126,11 @@ export function updateWatchlistItem(id: number, patch: Partial<Pick<WatchlistIte
     } else if (key === 'language_profile') {
       fields.push('language_profile = ?')
       values.push(normalizeLanguageProfile(value, getSettings().language_profile))
+    } else if (key === 'poster' || key === 'backdrop') {
+      // Spec B20: en la base nunca se guarda una ruta relativa (el frontend la
+      // resolvería contra MediaPilot y daría 404).
+      fields.push(`${key} = ?`)
+      values.push(normalizePosterUrl(value, key === 'backdrop' ? BACKDROP_SIZE : POSTER_SIZE).slice(0, 1000))
     } else if (key === 'backfill') {
       fields.push('backfill = ?')
       values.push(normalizeBackfill(value))

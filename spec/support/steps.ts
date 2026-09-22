@@ -28,6 +28,7 @@ import {
 } from '../../electron/debrid-status'
 import { episodeFromFileName, reorderedAudioIndexes } from '../../electron/postprocess'
 import { shouldDeferAttempt, nextAttemptAfterFailure } from '../../electron/attempts'
+import { normalizePosterUrl, posterBackfillPatch } from '../../electron/posters'
 import {
   normalizeLanguageProfile,
   addWatchlistItem,
@@ -82,6 +83,10 @@ export interface World {
   normalizedProfile?: string
   prevDefaultProfile?: string
   testItemId?: number
+  posterUrl?: string
+  posterItem?: { poster?: string | null; backdrop?: string | null }
+  posterDetail?: any
+  posterPatch?: { poster?: string; backdrop?: string }
 }
 
 export interface StepRun {
@@ -679,6 +684,84 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       updateSettings({ language_profile: normalizeLanguageProfile(restore) })
       if (id && listWatchlist().some((i) => i.id === id)) throw new Error('el título de prueba sigue en el listado')
       if (getSettings().language_profile !== restore) throw new Error(`el ajuste quedó en ${getSettings().language_profile}`)
+    },
+  },
+
+  // ── B20 · pósters de Seguimiento ────────────────────────────────────────
+  {
+    pattern: /^normalizo el póster "(.*)"$/,
+    fn: ({ world }, entrada) => {
+      world.posterUrl = normalizePosterUrl(entrada)
+    },
+  },
+  {
+    pattern: /^el póster queda como "(.*)"$/,
+    fn: ({ world }, esperado) => {
+      if (world.posterUrl !== esperado) {
+        throw new Error(`póster ${JSON.stringify(world.posterUrl)} · esperado ${JSON.stringify(esperado)}`)
+      }
+    },
+  },
+  {
+    pattern: /^un título en seguimiento "([^"]*)" sin póster$/,
+    fn: ({ world }) => {
+      world.posterItem = { poster: '', backdrop: '' }
+    },
+  },
+  {
+    pattern: /^un título en seguimiento "([^"]*)" con póster "([^"]*)"$/,
+    fn: ({ world }, _titulo, poster) => {
+      world.posterItem = { poster, backdrop: '' }
+    },
+  },
+  {
+    pattern: /^el detalle de TMDB de "([^"]*)" trae el póster "([^"]*)"$/,
+    fn: ({ world }, _titulo, poster) => {
+      world.posterDetail = { poster_path: poster }
+    },
+  },
+  {
+    pattern: /^el relleno le pone el póster "(.*)"$/,
+    fn: ({ world }, esperado) => {
+      if (!world.posterItem) throw new Error('no hay título en seguimiento en este escenario')
+      world.posterPatch = posterBackfillPatch(world.posterItem, world.posterDetail || {})
+      if (world.posterPatch.poster !== esperado) {
+        throw new Error(`el relleno puso ${JSON.stringify(world.posterPatch.poster)} · esperado ${JSON.stringify(esperado)}`)
+      }
+    },
+  },
+  {
+    pattern: /^el relleno no cambia ningún campo$/,
+    fn: ({ world }) => {
+      if (!world.posterItem) throw new Error('no hay título en seguimiento en este escenario')
+      world.posterPatch = posterBackfillPatch(world.posterItem, world.posterDetail || {})
+      const claves = Object.keys(world.posterPatch)
+      if (claves.length) throw new Error(`el relleno habría cambiado: ${claves.join(', ')}`)
+    },
+  },
+  {
+    pattern: /^añado el título de prueba "([^"]*)" con póster "([^"]*)"$/,
+    fn: ({ world }, title, poster) => {
+      const { item } = addWatchlistItem({ tmdb_id: 999999003, media_type: 'series', title, poster, backfill: 'new' })
+      world.testItemId = item.id
+    },
+  },
+  {
+    pattern: /^el listado lo devuelve con el póster "(.*)"$/,
+    fn: ({ world }, esperado) => {
+      const item = listWatchlist().find((i) => i.id === world.testItemId)
+      if (!item) throw new Error('el título de prueba no aparece en el listado')
+      if (item.poster !== esperado) {
+        throw new Error(`el listado devuelve ${JSON.stringify(item.poster)} · esperado ${JSON.stringify(esperado)}`)
+      }
+    },
+  },
+  {
+    pattern: /^borro el título de prueba y no queda rastro$/,
+    fn: ({ world }) => {
+      const id = world.testItemId
+      if (id) removeWatchlistItem(id)
+      if (id && listWatchlist().some((i) => i.id === id)) throw new Error('el título de prueba sigue en el listado')
     },
   },
 ]
