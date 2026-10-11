@@ -1,99 +1,223 @@
 <p align="center">
-  <img src="build/icon.ico" width="96" alt="TorDownloader PRO" />
+  <img src="build/icon.png" width="110" alt="MediaPilot" />
 </p>
 
-<h1 align="center">TorDownloader PRO</h1>
-<p align="center"><strong>Cliente premium de TorBox y Real-Debrid con metabúsqueda y catálogo integrado</strong></p>
+<h1 align="center">MediaPilot</h1>
+<p align="center"><strong>Descargador automático de películas y series — TorBox / Real-Debrid + proveedores latino, con la biblioteca ordenada como la espera Jellyfin</strong></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/plataforma-Windows%20x64-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/versi%C3%B3n-1.0.16-darkgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/versi%C3%B3n-1.0.20-darkgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/licencia-MIT-yellow?style=flat-square" />
+  <img src="https://img.shields.io/badge/escenarios-131-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/plataforma-Windows%20%7C%20Linux-lightgrey?style=flat-square" />
 </p>
 
 ---
+
+## Qué es
+
+MediaPilot vigila tus series y películas y las descarga solo: busca en fuentes latino primero,
+filtra la basura, manda el torrent al servicio débrid (TorBox o Real-Debrid), baja el archivo, le
+pone los subtítulos y lo deja en la carpeta con el nombre exacto que Jellyfin espera.
+
+No es un buscador de torrents con una lista de resultados: es un **monitor con criterio**. Sabe
+qué episodios le faltan, en qué orden bajarlos, cuándo un release es falso, cuándo el débrid está
+en cooldown y cuándo conviene esperar a que salga el audio latino en vez de conformarse con el
+inglés.
+
+## Cómo funciona el ciclo
+
+1. **Seguimiento** — añades una película o serie desde el catálogo de TMDB (o desde el buscador).
+2. **Comprobación cada 30 min**, más una cola continua para lo ya emitido: un episodio que ya
+   salió no espera al siguiente tick.
+3. **Búsqueda** — varias fuentes en español latino y, según el perfil de idioma de cada título,
+   metabúsqueda en inglés.
+4. **Filtros** — calidad mínima 1080p, descarte de nombres que no son la serie que buscas, lista
+   negra de releases que ya fallaron.
+5. **Preflight de duración** — compara la duración del archivo con la real de TMDB antes de
+   bajarlo: así no te trae el episodio de otra serie homónima.
+6. **Débrid** — adopta lo que TorBox / Real-Debrid ya tiene cacheado y detecta el cooldown.
+7. **Descarga y post-proceso** — pistas de audio en orden, subtítulos spa/en, y a la biblioteca.
+8. **Biblioteca** — `<películas>/<Título (Año)>/` y `<series>/<Título (Año)>/Season NN/`.
+   Con reparación de carpetas fantasma y reconciliación con el débrid.
 
 ## Características
 
-- **Metabúsqueda integrada** — 23 motores de búsqueda funcionando simultáneamente. Sin Docker, sin Jackett, sin configuración.
-- **TorBox + Real-Debrid** — Soporte para ambos servicios débrid. Autenticación OAuth. Selección de archivos RD.
-- **Discover** — Catálogo TMDB con exploración de películas y series. Búsqueda automática en proveedores latinos.
-- **Actualizaciones automáticas** — La app se actualiza sola desde GitHub Releases. Notificación, descarga y reinicio sin reinstalar.
-- **Descargas locales** — Monitoreo en tiempo real del progreso, velocidad y ETA. Descargas directas a tu PC.
-- **FlareSolverr integrado** — Se descarga e instala automáticamente. Reinicio manual desde la barra lateral si se atasca.
-- **Modo oscuro profesional** — Interfaz diseñada para uso intensivo, tipografía monoespaciada y esquema de color oscuro.
-- **Internacionalización** — Español latinoamericano e inglés. Cambio instantáneo desde la barra lateral.
+- **Perfil de idioma por título**: *latino primero* (con fallback a inglés), *solo latino* o
+  *inglés primero*, más un idioma por defecto para los títulos nuevos.
+- **Backfill en orden**: rellena las temporadas ya emitidas, de la más antigua a la más nueva.
+- **Metabúsqueda integrada**: 23 motores, sin Docker y sin Jackett obligatorio. Si tienes un
+  Jackett local lo detecta solo, y en ese caso es él quien se encarga de Cloudflare.
+- **TorBox + Real-Debrid**: vinculación desde la interfaz (Real-Debrid por OAuth), selección de
+  archivos en RD y estado del débrid en la pantalla de Panel.
+- **Discover**: catálogo de TMDB para explorar películas y series, con búsqueda automática en
+  fuentes latino.
+- **Subtítulos** en español e inglés, con el nombre que Jellyfin entiende (`<video>.<lang>.srt`).
+- **Interfaz en español latinoamericano e inglés**, con cambio inmediato desde la barra lateral.
+- **Modo servidor web**, además de Electron: sirve la misma interfaz para una máquina sin
+  escritorio (ver «Modo servidor web» abajo).
+- **Especificación ejecutable**: el comportamiento está contratado en Gherkin y verificado por
+  escenarios (`npm run spec`, 131 escenarios). Ver [`spec/`](spec/).
 
----
+## Requisitos
+
+**Para el modo recomendado (clonar + `start.bat` / `start.sh`): solo Git.** Los scripts instalan
+Node.js y Python si faltan. **Para la app instalada (Windows): nada** — el instalador trae todo.
+
+**Para el post-proceso completo** (ordenar las pistas de audio) **y el preflight de duración**, que
+la app toma del sistema:
+
+- **FFmpeg** — <https://ffmpeg.org/download.html> · Windows: `winget install Gyan.FFmpeg` ·
+  Debian/Ubuntu: `sudo apt install ffmpeg` · macOS: `brew install ffmpeg`
+
+**Para ejecutar desde el código o compilar el instalador**, además:
+
+- **Git** — <https://git-scm.com/downloads> (con interfaz gráfica: <https://desktop.github.com>)
+- **Node.js LTS**, incluye npm — <https://nodejs.org>
+- **Python 3.11 o superior** — imprescindible para ejecutar desde el código: el catálogo y la
+  búsqueda corren como scripts de Python (<https://www.python.org/downloads>). En la app instalada
+  viene empaquetado, no hace falta
+- **PyInstaller** — sólo si vas a generar el instalador, que congela los scripts: <https://pyinstaller.org/en/stable/> ·
+  `pip install pyinstaller`. (cloudscraper lo instala la propia app cuando lo necesita)
+- **Clave de TMDB** (gratuita y obligatoria para buscar y seguir títulos) —
+  <https://www.themoviedb.org/settings/api>
+
+Todo junto en Windows (PowerShell):
+
+```powershell
+winget install Git.Git OpenJS.NodeJS.LTS Python.Python.3.12 Gyan.FFmpeg
+```
+
+Todo junto en Debian/Ubuntu:
+
+```bash
+sudo apt update && sudo apt install -y git nodejs npm python3 python3-pip ffmpeg
+
+# solo si vas a generar el instalador:
+pip install --user pyinstaller
+```
 
 ## Instalación
 
-1. Descarga el instalador desde [Releases](https://github.com/latinokodi/tordownloader-pro/releases)
-2. Ejecuta `TorDownloader-PRO-Setup-x.x.x.exe`
-3. En Configuración, vincula tu cuenta TorBox o Real-Debrid
-4. Para Discover, ingresa tu TMDB API Key (gratis en themoviedb.org)
-
-**Requisitos:** Windows 10 o superior (x64). No requiere Python, Java, Docker ni dependencias externas.
-
----
-
-## Uso
-
-### Búsqueda
-Escribe y presiona Enter. Resultados de 23 motores con título, tamaño, seeders, indexer y enlace.
-
-### Discover
-Explora el catálogo TMDB, selecciona una película o serie, elige temporada y episodio. La app busca automáticamente en proveedores de contenido latino.
-
-### Descargas
-Las descargas muestran progreso en tiempo real: estado en la nube (TorBox/RD) y descarga local con velocidad y ETA.
-
-### Configuración
-- Vincular TorBox o Real-Debrid vía OAuth
-- Carpeta de destino
-- TMDB API Key para Discover
-- Auto-eliminar completados
-- Buscar actualizaciones de la app
-- Probar motores de búsqueda
-- Idioma (ES / EN)
-
----
-
-## Tecnología
-
-| Componente | Tecnología |
-|---|---|
-| Frontend | React 18 + TypeScript + Tailwind CSS |
-| Backend | Electron + Node.js |
-| Metabúsqueda | Python (PyInstaller .exe) + qBittorrent plugins |
-| Base de datos | SQLite (better-sqlite3) |
-| Bypass CF | FlareSolverr (auto-descargable) |
-| Actualizaciones | electron-updater + GitHub Releases |
-| Empaquetado | electron-builder (NSIS) |
-| CI/CD | GitHub Actions |
-| Tests | Vitest |
-
----
-
-## Desarrollo
+### Opción 1 · Clonar y ejecutar `start.bat` (Windows) — recomendada
 
 ```bash
-git clone https://github.com/latinokodi/tordownloader-pro.git
-cd tordownloader-pro
-npm install
-npm run dev       # modo desarrollo
-npm test          # ejecutar tests
-npm run dist      # generar instalador
+git clone https://github.com/latinokodi/MediaPilot.git
+cd MediaPilot
+start.bat
 ```
 
----
+`start.bat` comprueba e **instala solo** lo que falte y arranca el **servidor web** (abre
+`http://127.0.0.1:9650` en tu navegador; ahí configuras carpetas, debrid y TMDB):
+
+1. **Node.js** y **Python** — si no están, los instala con `winget` (y si no hay `winget`, te da
+   el enlace para hacerlo a mano).
+2. **FFmpeg** — opcional: te pregunta. Sin él no hay post-proceso de audio.
+3. Las dependencias del proyecto (`npm install`) y la compilación, la primera vez.
+4. Arranca el servidor web (deja la ventana abierta; para pararlo, Ctrl+C).
+
+¿Sólo quieres saber si el equipo está listo, sin arrancar nada? `start.bat check`
+
+### Linux y macOS
+
+```bash
+chmod +x start.sh     # sólo la primera vez
+./start.sh            # comprueba/instala dependencias y arranca
+```
+
+En una máquina sin escritorio (un servidor por SSH) arranca directamente el **modo servidor web**:
+
+```bash
+npm run server     # compila y sirve la interfaz en http://127.0.0.1:9650
+```
+
+Usa la misma base de datos y los mismos motores que la versión de escritorio. El puerto se
+cambia con `TDP_PORT`.
+
+### Opción 2 · Instalador de Windows (opcional)
+
+Descarga el instalador desde [Releases](https://github.com/latinokodi/MediaPilot/releases) y
+ejecútalo. No necesita Python ni Node: congela los scripts con PyInstaller. Los motores se generan
+con `pip install pyinstaller cloudscraper` y luego `npm run pyinstaller`; el instalador completo,
+con `npm run dist`.
+
+## Configuración
+
+Todo se configura en **Configuración** dentro de la app:
+
+- Carpeta de películas y carpeta de series (las dos rutas que lee Jellyfin)
+- **TMDB API Key** (gratis en themoviedb.org → tu cuenta → Configuración → API): **obligatoria** para
+  buscar y seguir títulos; sin ella la búsqueda de Seguimiento no devuelve nada
+- TorBox (API key) y Real-Debrid (OAuth)
+- Perfil de idioma por defecto para títulos nuevos
+- Jackett (opcional: URL y API key, o detección automática de una instalación local)
+- Jellyfin (URL y API key) para refrescar la biblioteca al terminar una descarga
+
+[`.env.example`](.env.example) documenta las variables de entorno equivalentes, por si prefieres
+un despliegue sin interfaz.
+
+## Especificación ejecutable (BDD → TDD)
+
+El comportamiento del pipeline no está descrito solo en prosa: está **contratado** en
+[`spec/mediapilot-grab-pipeline.md`](spec/mediapilot-grab-pipeline.md) (decisiones B1…B20) y
+traducido a escenarios Gherkin en `spec/features/*.feature`, cada uno apoyado en lógica pura en
+TypeScript y comprobado además contra la base de datos real.
+
+```bash
+npm run spec     # 117 escenarios
+npm test         # Vitest
+```
+
+Los escenarios son la red de seguridad: cualquier cambio de comportamiento —o el arreglo de un
+fallo real— entra primero por ahí. Cada `B…` del contrato cita el caso que lo motivó, no una
+teoría.
+
+## Estructura
+
+```
+electron/                 proceso principal (monitor, grabber, débrid, biblioteca, post-proceso)
+electron/qbit-plugins/    motores de búsqueda (Python, empaquetados con PyInstaller)
+src/                      interfaz React + TypeScript + Tailwind
+spec/                     contrato + escenarios Gherkin ejecutables
+.github/workflows/        compilación del instalador y publicación de releases
+```
+
+## Notas
+
+- El directorio de datos es `~/.tordownloader-pro/` y la base se llama `tordownloader.db`: nombres
+  heredados del proyecto original que se mantienen por compatibilidad con las instalaciones
+  existentes (se pueden cambiar con la variable `TDP_DATA_DIR`).
+- Los `.exe` de los motores de búsqueda no están en el repositorio: son artefactos de compilación
+  (`npm run pyinstaller`) y el workflow de CI los genera.
+- En Linux puede correr como servidor web sin Electron: `npm run server` (puerto `TDP_PORT`,
+  por defecto 9650).
+
+## Créditos
+
+- Metadatos de catálogo: **TMDB** (este producto usa la API de TMDB, pero no está avalado ni
+  certificado por TMDB).
+- Subtítulos: addon público de OpenSubtitles para Stremio.
+- Motores de búsqueda: ecosistema de plugins de qBittorrent / Jackett — ver
+  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Descargo de responsabilidad
 
-**TorDownloader PRO es una herramienta de búsqueda y gestión de descargas.** No aloja, almacena ni distribuye contenido protegido por derechos de autor. Los resultados provienen de motores públicos de terceros. El usuario es responsable del cumplimiento de las leyes de su jurisdicción.
-
----
+MediaPilot es una herramienta de búsqueda y gestión de descargas. **No aloja, almacena ni
+distribuye contenido protegido por derechos de autor**: solo consulta motores y APIs públicas de
+terceros y gestiona lo que el usuario decide descargar. Cada usuario es responsable del
+cumplimiento de las leyes de su jurisdicción.
 
 ## Licencia
 
-MIT © 2025 — [latinokodi](https://github.com/latinokodi)
+MIT © 2025-2026 [latinokodi](https://github.com/latinokodi)
+
+---
+
+## English
+
+MediaPilot is a self-hosted movie/TV **auto-downloader** for Windows and Linux. It monitors a
+TMDB-based watchlist, searches Latin-American Spanish sources first (with English fallback),
+filters junk releases, runs a runtime preflight against TMDB, hands the torrent to a debrid
+service (TorBox / Real-Debrid), downloads it, fetches subtitles and files everything into the
+exact `Title (Year)/Season NN/` layout Jellyfin expects. Its behaviour is contracted as
+executable Gherkin scenarios (`spec/`, 117 scenarios, `npm run spec`). MIT licensed.

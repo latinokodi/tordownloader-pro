@@ -88,7 +88,7 @@ function fmtBytes(bytes: number): string {
 
 /**
  * Un release puede ser de OTRA serie con el mismo nombre (p. ej. la serie
- * "Dark" 2017 colándose en una búsqueda de "Dark Matter" 2024). Se comprueba
+ * "Dark" 2017 colándose en una búsqueda de "Demo7" 2024). Se comprueba
  * ANTES de nada que el nombre del release corresponda al título objetivo; si
  * no, se borra, se marca el grab como fallido (para que el monitor reintente)
  * y el release entra en la lista negra.
@@ -96,7 +96,7 @@ function fmtBytes(bytes: number): string {
  * Antes también se comparaba la DURACIÓN del archivo con el runtime de TMDB:
  * se quitó a petición del usuario (overkill) — descargaba el archivo entero
  * para luego borrarlo y, aun así, una homónima con duración parecida
- * (Dark 2017 = 56 min vs Dark Matter = 59) lo pasaba. El nombre es la señal
+ * (Dark 2017 = 56 min vs Demo7 = 59) lo pasaba. El nombre es la señal
  * fiable y barata.
  *
  * Devuelve el mensaje de error si hay que abortar la descarga, o null si OK.
@@ -681,7 +681,7 @@ async function knownImdbId(torboxId: string): Promise<string> {
  */
 async function fetchSubtitlesForDownload(name: string, type: string, destFolder: string, onlyFiles?: string[], torboxId?: string) {
   try {
-    const py = process.env.TDP_PYTHON || 'python3';
+    const py = process.env.TDP_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
     const script = path.join(__dirname, '..', 'electron', 'subtitles.py');
     if (!fs.existsSync(script)) {
       console.log('[Subs] subtitles.py no encontrado, saltando descarga de subtítulos');
@@ -725,7 +725,7 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
 
     // El imdb_id REAL (el que la app ya conoce por la fila del grab) manda
     // sobre la heurística del nombre: resolverlo por título fallaba con los
-    // nombres de release ("Dark Matter MeGusta UIndex org") y a veces acertaba
+    // nombres de release ("Demo7 MeGusta UIndex org") y a veces acertaba
     // en OTRA serie homónima (subtítulos de la serie equivocada).
     const imdbId = torboxId ? await knownImdbId(torboxId) : ''
 
@@ -733,7 +733,7 @@ async function fetchSubtitlesForDownload(name: string, type: string, destFolder:
       const videoPath = path.join(destFolder, v);
       const args = ['electron/subtitles.py', 'fetch', '--title', title, '--type', isSeries ? 'series' : 'movie', '--dest', videoPath];
       if (imdbId) args.push('--imdb', imdbId);
-      // En packs, el nombre del TORRENT sólo trae la temporada ("FBI.S01.COMPLETE…"):
+      // En packs, el nombre del TORRENT sólo trae la temporada ("Demo.S01.COMPLETE…"):
       // el episodio se saca del nombre del ARCHIVO. Sin esto, los packs se quedaban
       // con 0 subtítulos (había que bajarlos a mano, uno por uno).
       const fileEp = episodeFromFileName(v)

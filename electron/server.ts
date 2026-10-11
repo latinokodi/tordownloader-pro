@@ -57,7 +57,7 @@ function scriptPath(scriptName: string): string {
   return path.join(__dirname, '..', 'electron', scriptName)
 }
 function spawnPython(scriptName: string, args: string[], env: Record<string, string> = {}) {
-  const py = process.env.TDP_PYTHON || 'python3'
+  const py = process.env.TDP_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
   return spawn(py, [scriptPath(scriptName), ...args], {
     env: { ...process.env as any, ...env },
     windowsHide: true,
