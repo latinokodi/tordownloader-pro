@@ -147,30 +147,57 @@ def sub_ext_for(url):
 def download_for_video(imdb_id, media_type, video_path, season=None, episode=None,
                        prefer=('spa', 'en')):
     """Descarga subs (spa y en) junto al video, con nombre base Jellyfin.
-    Mapeo de códigos: spl/spa→.spa (latino preferido), eng/en→.en"""
+
+    Para español se bajan TODAS las versiones disponibles (spl + spa) con
+    sufijos .spa, .spa.2, .spa.3…, para que el usuario pruebe cuál concuerda
+    con el audio. Para inglés se baja la primera, como antes.
+    Mapeo de códigos: spl/spa→.spa (latino primero), eng/en→.en"""
     base = os.path.splitext(video_path)[0]
     got = []
     for lang in prefer:
-        # spl = Spanish Latin (mejor que spa cuando existe)
-        api_langs = ('spl', 'spa') if lang == 'spa' else ('eng', 'en')
-        candidates = []
-        for al in api_langs:
-            candidates = fetch_subtitles(imdb_id, media_type, season, episode, lang=al)
-            if candidates:
-                break
+        if lang == 'spa':
+            # todas las versiones en español: spl (latino) primero, luego spa
+            candidates = []
+            for al in ('spl', 'spa'):
+                candidates.extend(fetch_subtitles(imdb_id, media_type, season, episode, lang=al))
+            # quitar duplicados por URL, conservando el orden (spl antes que spa)
+            seen = set()
+            uniq = []
+            for c in candidates:
+                if c['url'] not in seen:
+                    seen.add(c['url'])
+                    uniq.append(c)
+            candidates = uniq
+        else:
+            # inglés: la primera, como antes
+            candidates = []
+            for al in ('eng', 'en'):
+                candidates = fetch_subtitles(imdb_id, media_type, season, episode, lang=al)
+                if candidates:
+                    break
         if not candidates:
             continue
-        # elegir: latino primero si hay varios
-        cand = candidates[0]
-        ext = sub_ext_for(cand['url'])
-        dest = f'{base}.{lang}{ext}'
-        if os.path.exists(dest):
-            print(f'  = ya existe: {os.path.basename(dest)}')
-            got.append(dest)
-            continue
-        print(f'  → {lang}: {len(candidates)} candidatos, descargando...')
-        if download_subtitle(cand['url'], dest):
-            got.append(dest)
+        if lang == 'spa':
+            print(f'  → spa: {len(candidates)} versiones, descargando todas...')
+            for i, cand in enumerate(candidates):
+                suffix = '' if i == 0 else f'.{i + 1}'
+                dest = f'{base}.{lang}{suffix}{sub_ext_for(cand["url"])}'
+                if os.path.exists(dest):
+                    print(f'    = ya existe: {os.path.basename(dest)}')
+                    got.append(dest)
+                    continue
+                if download_subtitle(cand['url'], dest):
+                    got.append(dest)
+        else:
+            cand = candidates[0]
+            dest = f'{base}.{lang}{sub_ext_for(cand["url"])}'
+            if os.path.exists(dest):
+                print(f'  = ya existe: {os.path.basename(dest)}')
+                got.append(dest)
+                continue
+            print(f'  → {lang}: descargando...')
+            if download_subtitle(cand['url'], dest):
+                got.append(dest)
     return got
 
 
