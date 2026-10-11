@@ -8,6 +8,31 @@ export const RD_OPENSOURCE_CLIENT_ID = 'X245A4XAIBGVM';
 const OAUTH_BASE = 'https://api.real-debrid.com/oauth/v2';
 const REST_BASE = 'https://api.real-debrid.com/rest/1.0';
 
+/** Extensiones que RD reconoce como "vídeo" al trocear un torrent. */
+const RD_VIDEO_AND_SUB_EXT_RE = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm|srt|vtt|ass|ssa|sub)$/i;
+/** Extensiones de archivo comprimido (release de escena, o lo que RD empaqueta). */
+const RD_ARCHIVE_EXT_RE = /\.(rar|zip|zipx|7z)$/i;
+
+/**
+ * Elige qué archivos de un torrent de Real-Debrid seleccionar.
+ *
+ * RD empaqueta la selección entera en un .rar cuando contiene aunque sea UN
+ * archivo que no reconoce como vídeo (`.nfo`, arte de DVD, capturas): para
+ * quedarse con enlaces de vídeo individuales hay que seleccionar SÓLO
+ * vídeo + subtítulos. Si el torrent es un release de escena (sólo `.rar`), se
+ * seleccionan los archivos de archivo para poder extraerlos después. Si no hay
+ * ni vídeo ni archivo (torrent raro), se selecciona todo, como antes.
+ *
+ * Devuelve los ids (como string) a pasar a `/torrents/selectFiles`.
+ */
+export function chooseRdFileIds(files: Array<{ id: any; path?: string; name?: string }>): string[] {
+  const named = files.map((f) => ({ ...f, n: String(f.path || f.name || '').toLowerCase() }));
+  const videoOrSub = named.filter((f) => RD_VIDEO_AND_SUB_EXT_RE.test(f.n));
+  const archives = named.filter((f) => RD_ARCHIVE_EXT_RE.test(f.n));
+  const chosen = videoOrSub.length > 0 ? videoOrSub : archives.length > 0 ? archives : named;
+  return chosen.map((f) => String(f.id));
+}
+
 export class RealDebridAPI {
   private client: AxiosInstance;
 

@@ -30,6 +30,12 @@ import { episodeFromFileName, reorderedAudioIndexes } from '../../electron/postp
 import { shouldDeferAttempt, nextAttemptAfterFailure } from '../../electron/attempts'
 import { normalizePosterUrl, posterBackfillPatch } from '../../electron/posters'
 import {
+  jellyfinAuthHeaders,
+  jellyfinBase,
+  jellyfinLibraryPath,
+  jellyfinPosterPath,
+} from '../../electron/jellyfin-auth'
+import {
   normalizeLanguageProfile,
   addWatchlistItem,
   updateWatchlistItem,
@@ -37,6 +43,7 @@ import {
   removeWatchlistItem,
 } from '../../electron/watchlist'
 import { getSettings, updateSettings } from '../../electron/db'
+import { chooseRdFileIds } from '../../electron/realdebrid'
 
 export interface World {
   titles?: string[]
@@ -69,6 +76,10 @@ export interface World {
   minQuality?: VideoQuality
   qualityOk?: boolean
   fileEpisode?: { season: number; episode: number } | null
+  jfKey?: string
+  jfHeaders?: Record<string, string>
+  jfBase?: string
+  jfPosterPath?: string
   audioStreams?: Array<{ index: number; language?: string }>
   audioOrder?: string
   torrentState?: string
@@ -87,6 +98,8 @@ export interface World {
   posterItem?: { poster?: string | null; backdrop?: string | null }
   posterDetail?: any
   posterPatch?: { poster?: string; backdrop?: string }
+  rdFiles?: Array<{ id: number; path: string }>
+  rdChosen?: string[]
 }
 
 export interface StepRun {
@@ -762,6 +775,102 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       const id = world.testItemId
       if (id) removeWatchlistItem(id)
       if (id && listWatchlist().some((i) => i.id === id)) throw new Error('el título de prueba sigue en el listado')
+    },
+  },
+
+  // ── B23 · autenticación contra Jellyfin (12 retiró X-Emby-Token y ?api_key=) ─
+  {
+    pattern: /^preparo la autenticación contra Jellyfin con la clave "(.*)"$/,
+    fn: ({ world }, key) => {
+      world.jfKey = key
+      world.jfHeaders = jellyfinAuthHeaders(key)
+    },
+  },
+  {
+    pattern: /^la cabecera de autorización pide el esquema "(.*)" con esa clave$/,
+    fn: ({ world }, esquema) => {
+      const esperado = `${esquema} Token="${world.jfKey}"`
+      if (world.jfHeaders?.Authorization !== esperado) {
+        throw new Error(`Authorization = ${JSON.stringify(world.jfHeaders?.Authorization)} · esperado ${JSON.stringify(esperado)}`)
+      }
+    },
+  },
+  {
+    pattern: /^la cabecera antigua también va, para servidores sin actualizar$/,
+    fn: ({ world }) => {
+      if (world.jfHeaders?.['X-Emby-Token'] !== world.jfKey) {
+        throw new Error('no se envió la cabecera antigua X-Emby-Token')
+      }
+    },
+  },
+  {
+    pattern: /^no se envía ninguna cabecera de autenticación$/,
+    fn: ({ world }) => {
+      const n = Object.keys(world.jfHeaders || {}).length
+      if (n !== 0) throw new Error(`sin clave se enviaron ${n} cabeceras`)
+    },
+  },
+  {
+    pattern: /^la ruta del listado de la biblioteca no lleva la clave$/,
+    fn: () => {
+      const ruta = jellyfinLibraryPath()
+      if (/api_key=|X-Emby/i.test(ruta)) throw new Error(`la ruta lleva la clave: ${ruta}`)
+    },
+  },
+  {
+    pattern: /^la ruta del póster no lleva la clave$/,
+    fn: ({ world }) => {
+      world.jfPosterPath = jellyfinPosterPath('abc123', 'tag1')
+      if (/api_key=/.test(world.jfPosterPath)) throw new Error(`la ruta lleva la clave: ${world.jfPosterPath}`)
+    },
+  },
+  {
+    pattern: /^normalizo la URL de Jellyfin "(.*)"$/,
+    fn: ({ world }, url) => {
+      world.jfBase = jellyfinBase(url)
+    },
+  },
+  {
+    pattern: /^la URL base queda "(.*)"$/,
+    fn: ({ world }, esperado) => {
+      if (world.jfBase !== esperado) throw new Error(`la URL quedó ${JSON.stringify(world.jfBase)}`)
+    },
+  },
+  {
+    pattern: /^pido el póster del elemento "(.*)" con etiqueta "(.*)"$/,
+    fn: ({ world }, id, tag) => {
+      world.jfPosterPath = jellyfinPosterPath(id, tag)
+    },
+  },
+  {
+    pattern: /^la ruta del póster es "(.*)"$/,
+    fn: ({ world }, esperado) => {
+      if (world.jfPosterPath !== esperado) {
+        throw new Error(`la ruta es ${JSON.stringify(world.jfPosterPath)} · esperada ${JSON.stringify(esperado)}`)
+      }
+    },
+  },
+  // ── B24 · selección de archivos en Real-Debrid ─────────────────────────
+  {
+    pattern: /^los archivos del torrent RD son:$/,
+    fn: ({ world, rows }) => {
+      world.rdFiles = rows.map((r) => ({ id: Number(r[0]), path: r[1] }))
+    },
+  },
+  {
+    pattern: /^selecciono los archivos a bajar en RD$/,
+    fn: ({ world }) => {
+      world.rdChosen = chooseRdFileIds(world.rdFiles ?? [])
+    },
+  },
+  {
+    pattern: /^se seleccionan los ids "([^"]*)"$/,
+    fn: ({ world }, ids) => {
+      const want = ids.split(',').map((s) => s.trim()).filter(Boolean)
+      const got = world.rdChosen ?? []
+      if (JSON.stringify(got) !== JSON.stringify(want)) {
+        throw new Error(`ids seleccionados ${got.join(',')} · esperados ${want.join(',')}`)
+      }
     },
   },
 ]

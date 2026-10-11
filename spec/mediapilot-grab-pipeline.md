@@ -329,9 +329,64 @@ Reglas:
 Criterio de éxito: `GET /api/watchlist` no devuelve ningún póster relativo ni
 vacío en los títulos que existen en TMDB, y cada URL responde 200.
 
+## B23 · Autenticación contra Jellyfin (12 dejó de aceptar lo antiguo)
+
+Jellyfin 12 (2026-09-08) **retiró las formas antiguas de identificarse**: la
+cabecera `X-Emby-Token` y la clave en la URL (`?api_key=…`) devuelven 401. Con el
+servidor de casa ya en 12.1.0, el listado de la biblioteca y el refresco tras una
+descarga fallaban sin más señal que un 401 en el log.
+
+- Regla 1: la clave va **en la cabecera** `Authorization: MediaBrowser Token="…"`,
+  que es la forma que sigue valiendo en 12 **y también en 10.11**.
+- Regla 2: se envía además `X-Emby-Token` para no romper servidores sin
+  actualizar; cada servidor usa la que entiende.
+- Regla 3: **ninguna ruta lleva la clave en la URL**, ni el listado ni los pósters.
+- Regla 4: sin clave configurada no se envía ninguna cabecera de autenticación.
+- Regla 5: la etiqueta de versión del póster (`tag`) se conserva: sin ella Jellyfin
+  devuelve la imagen cacheada anterior.
+
+Criterio de éxito: contra un Jellyfin 12 real, el listado devuelve los elementos y
+el refresco responde 204; contra un 10.11 sin actualizar, lo mismo.
+
+### B24 · Selección de archivos en Real-Debrid (evita el .rar)
+
+Real-Debrid empaqueta la selección entera en un `.rar` si el torrent trae aunque
+sea UN archivo que no reconoce como vídeo (`.nfo`, arte de DVD, capturas): el
+resultado es un enlace `.rar` que Jellyfin no reproduce. La auto-selección
+anterior seleccionaba todos los archivos y caía en ese caso.
+
+- Regla 1: al seleccionar (`waiting_files_selection`) se eligen SÓLO vídeo +
+  subtítulos (`mkv/mp4/avi/m4v/mov/wmv/ts/webm` + `srt/vtt/ass/ssa/sub`).
+- Regla 2: si no hay ni vídeo ni subtítulo pero sí archivos comprimidos
+  (`.rar/.zip/.zipx/.7z`), se seleccionan los comprimidos (release de escena:
+  se extraen después, ver B25).
+- Regla 3: si no hay ni vídeo ni archivo (torrent raro), se selecciona todo
+  (comportamiento anterior).
+
+Criterio de éxito: `npm run spec` en verde para `rd-rar-handling.feature` (@b24);
+un release con `.mkv` + `.nfo` produce enlaces de vídeo individuales, no un `.rar`.
+
+### B25 · Extracción de .rar (release de escena)
+
+Cuando RD no pudo trocear el torrent (escena que viene ya en `.rar`), la descarga
+baja el `.rar` y antes quedaba marcada "completada" sin ningún vídeo reproducible.
+
+- Regla 1: si la descarga no deja ningún vídeo y sí `.rar`, el worker los extrae
+  con `node-unrar-js` (WASM, sin binario nativo) al mismo destino y recupera los
+  vídeos.
+- Regla 2: si aun así no queda ningún vídeo, la descarga FALLA (no se marca
+  completada) y el release se añade a `bad_releases` para que el monitor no lo
+  vuelva a elegir.
+- Regla 3: la extracción usa el `.wasm` de `node_modules/node-unrar-js/dist/js/`
+  (pasado como `wasmBinary`), no un binario del sistema.
+
+Criterio de éxito: un release de escena real (`.rar` con `.mkv` dentro) deja el
+`.mkv` en la carpeta destino y queda "completado"; verificado con
+`Dark Matter S02E06 …-d3g.rar` (hevc 1080p DDP5.1, ~900 MB, extraído OK).
+
 ## 9. Success criteria (verificables)
 
-1. `npm run spec` en verde (93 escenarios), con las conductas B1–B17 cubiertas.
+1. `npm run spec` en verde, con las conductas B1–B25 cubiertas.
 2. `POST /api/library/heal` sobre la biblioteca real devuelve `changed:false`.
 3. `scripts/audit-tv-layout.py` → 0 problemas; sin episodios duplicados.
 4. Logs reales muestran: `cola: N episodio(s) encolado(s) — 3/3 en curso`,

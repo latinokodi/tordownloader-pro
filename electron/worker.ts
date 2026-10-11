@@ -1,5 +1,5 @@
 import { TorboxAPI } from './torbox';
-import { RealDebridAPI } from './realdebrid';
+import { RealDebridAPI, chooseRdFileIds } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, releaseStalledPreflights } from './db';
 import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId, findWatchlistItem } from './watchlist';
 import { episodeFromFileName, registerDownloadedEpisodes, normalizeAudioOrder, resolveFolderOwner } from './postprocess';
@@ -13,6 +13,7 @@ import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { eventBus } from './event-bus';
 import { computeDestination, safeSegment, seriesNameMatches, getAltTitlesCached } from './media-layout';
+import { createExtractorFromFile } from 'node-unrar-js';
 
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
@@ -370,9 +371,9 @@ async function pollRealDebrid(settings: any, mainWindow: BrowserWindow | null) {
           if (infoRes.success && infoRes.data) {
             const files = infoRes.data.files || [];
             if (files.length > 0) {
-              const fileIds = files.map((f: any) => String(f.id));
+              const fileIds = chooseRdFileIds(files);
               await rd.selectFiles(tid, fileIds);
-              console.log(`[RD] Auto-selected ${fileIds.length} files for ${name}`);
+              console.log(`[RD] Auto-selected ${fileIds.length}/${files.length} files for ${name} (vídeo+subs, o .rar si es release de escena)`);
             }
           }
         } catch (err) {
@@ -610,6 +611,50 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
 
 const VIDEO_EXT_RE = /\.(mkv|mp4|avi|m4v|mov|wmv)$/i;
 const EP_RE = /[sS](\d{1,2})[eE](\d{1,2})/;
+const ARCHIVE_EXT_RE = /\.(rar|zip|zipx|7z)$/i;
+
+/**
+ * Extrae los archivos comprimidos descargados (release de escena, o lo que RD
+ * empaqueta cuando el torrent trae archivos que no reconoce como vídeo) y
+ * devuelve las rutas de los vídeos recuperados. Usa node-unrar-js (WASM, sin
+ * binario nativo); el .wasm se lee de node_modules y se pasa como wasmBinary
+ * para no depender del __dirname del bundle. Un archivo que no se pueda
+ * extraer se loguea y se salta: la descarga fallará más arriba si no queda
+ * ningún vídeo reproducible.
+ */
+async function extractArchives(archivePaths: string[], destFolder: string): Promise<string[]> {
+  const videos: string[] = [];
+  const wasmPath = path.join(__dirname, '..', 'node_modules', 'node-unrar-js', 'dist', 'js', 'unrar.wasm');
+  let wasmBinary: Buffer | null = null;
+  try {
+    wasmBinary = fs.readFileSync(wasmPath);
+  } catch {
+    console.warn(`[Worker] no se encontró ${wasmPath}: no se podrá extraer .rar`);
+  }
+  for (const archivePath of archivePaths) {
+    try {
+      const extractor = await createExtractorFromFile({
+        filepath: archivePath,
+        targetPath: destFolder,
+        ...(wasmBinary ? { wasmBinary: wasmBinary as unknown as ArrayBuffer } : {}),
+      });
+      const list = extractor.getFileList();
+      const names = [...list.fileHeaders].filter((f) => !f.flags.directory).map((f) => f.name);
+      // extract() devuelve un generador que ya omite los archivos saltados; cada
+      // entrada es { fileHeader } y el archivo ya quedó escrito en destFolder.
+      const extracted = extractor.extract({ files: names });
+      for (const arcFile of extracted.files) {
+        if (VIDEO_EXT_RE.test(arcFile.fileHeader.name)) {
+          videos.push(path.join(destFolder, arcFile.fileHeader.name));
+        }
+      }
+      console.log(`[Worker] .rar extraído: ${path.basename(archivePath)} → ${videos.length} vídeo(s)`);
+    } catch (e: any) {
+      console.warn(`[Worker] extracción falló para ${path.basename(archivePath)}: ${e?.message || e}`);
+    }
+  }
+  return videos;
+}
 
 /**
  * imdb_id del título grabado, leído de la fila del grab (que lo trae del
@@ -750,6 +795,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
     const totalLinks = links.length;
     let completedBytes = 0;
     const downloadedVideoPaths: string[] = [];
+    const downloadedArchivePaths: string[] = [];
 
     for (let idx = 0; idx < links.length; idx++) {
       const link = links[idx];
@@ -825,6 +871,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
       }
       console.log(`[Worker] RD ✓ ${safeName} (${fmtBytes(result.bytes_downloaded || expectedSize)})`)
       if (VIDEO_EXT_RE.test(safeName)) downloadedVideoPaths.push(filePath)
+      else if (ARCHIVE_EXT_RE.test(safeName)) downloadedArchivePaths.push(filePath)
       appendDownloadedFile(tid, filePath)
 
       completedBytes += expectedSize || result.bytes_downloaded;
@@ -833,6 +880,20 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
     // If no links were successfully downloaded, report the failure
     if (completedBytes === 0 && links.length > 0) {
       throw new Error(`All ${links.length} link(s) failed to unrestrict or download`);
+    }
+
+    // Release de escena / RD empaquetó en .rar: no hay vídeo directo. Extraer
+    // los .rar y recuperar el vídeo. Si aun así no queda ninguno, fallar la
+    // descarga (antes quedaba "completada" con un .rar que Jellyfin no reproduce).
+    if (downloadedVideoPaths.length === 0 && downloadedArchivePaths.length > 0) {
+      const extracted = await extractArchives(downloadedArchivePaths, destFolder);
+      for (const p of extracted) appendDownloadedFile(tid, p);
+      downloadedVideoPaths.push(...extracted);
+    }
+    if (downloadedVideoPaths.length === 0) {
+      const row = getGrabByTorboxId(tid);
+      if (row && (row.info_hash || row.title)) addBadRelease(row.info_hash || '', 'release sin archivo de video reproducible (¿.rar sin extraer?)', row.title || '');
+      throw new Error('El release no contiene ningún archivo de video reproducible (¿.rar sin extraer?)');
     }
 
     // ¿Es realmente el episodio pedido? (evita releases de otra serie homónima)
