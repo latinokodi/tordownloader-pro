@@ -15,6 +15,7 @@
 import path from 'path'
 import fs from 'fs'
 import { getSettings, getDB, type Settings } from './db'
+import { jellyfinAuthHeaders, jellyfinLibraryPath, jellyfinPosterPath } from './jellyfin-auth'
 
 const VIDEO_RE = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i
 const SUB_RE = /\.(srt|vtt|ass|ssa|sub)$/i
@@ -93,8 +94,8 @@ async function jellyfinIndex(): Promise<Map<string, JellyfinItem>> {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 8_000)
     const res = await fetch(
-      `${url}/Items?Recursive=true&IncludeItemTypes=Movie,Series&Fields=Path&api_key=${encodeURIComponent(key)}`,
-      { signal: ctrl.signal },
+      `${url}${jellyfinLibraryPath()}`,
+      { headers: jellyfinAuthHeaders(key), signal: ctrl.signal },
     )
     clearTimeout(timer)
     if (res.ok) {
@@ -134,7 +135,9 @@ export async function fetchJellyfinPoster(folderName: string, kind: 'movie' | 's
   const item = map.get(jfKey(kind === 'series' ? 'Series' : 'Movie', path.basename(folderName)))
   if (!item || !item.ImageTags?.Primary) return null
   try {
-    const res = await fetch(`${url}/Items/${item.Id}/Images/Primary?maxHeight=450&quality=90&tag=${encodeURIComponent(item.ImageTags.Primary)}&api_key=${encodeURIComponent(key)}`)
+    const res = await fetch(`${url}${jellyfinPosterPath(item.Id, item.ImageTags.Primary)}`, {
+      headers: jellyfinAuthHeaders(key),
+    })
     if (!res.ok) return null
     const buffer = Buffer.from(await res.arrayBuffer())
     return { buffer, contentType: res.headers.get('content-type') || 'image/jpeg' }
@@ -398,7 +401,7 @@ export async function jellyfinRefresh(): Promise<{ sent: boolean; error?: string
   try {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 10_000)
-    const res = await fetch(`${url}/Library/Refresh`, { method: 'POST', headers: { 'X-Emby-Token': key }, signal: ctrl.signal })
+    const res = await fetch(`${url}/Library/Refresh`, { method: 'POST', headers: jellyfinAuthHeaders(key), signal: ctrl.signal })
     clearTimeout(timer)
     if (res.status === 204 || res.ok) {
       console.log('[library] Jellyfin library refresh solicitado')

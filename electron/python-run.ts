@@ -4,6 +4,7 @@
 import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 import type { Settings } from './db'
 
 const DEFAULT_JACKETT_INDEXERS = [
@@ -14,11 +15,26 @@ const DEFAULT_JACKETT_INDEXERS = [
 ]
 
 export function pythonPath(): string {
-  return process.env.TDP_PYTHON || 'python3'
+  if (process.env.TDP_PYTHON) return process.env.TDP_PYTHON
+  // En Windows no hay 'python3': el interprete se llama 'python' (o 'py').
+  return process.platform === 'win32' ? 'python' : 'python3'
 }
 
 export function scriptPath(scriptName: string): string {
-  return path.join(__dirname, '..', 'electron', scriptName)
+  // Se busca el script donde esté: junto al bundle (dist-electron/../electron) o
+  // en el directorio del proyecto, para que sirva tanto en el servidor web como
+  // ejecutando desde el código.
+  const candidatos = [
+    path.join(__dirname, '..', 'electron', scriptName),
+    path.join(process.cwd(), 'electron', scriptName),
+    path.join(__dirname, scriptName),
+  ]
+  for (const c of candidatos) {
+    try {
+      if (fs.existsSync(c)) return c
+    } catch { /* siguiente */ }
+  }
+  return candidatos[0]
 }
 
 /**
@@ -31,9 +47,13 @@ export function setupSearchEnv(settings: Pick<Settings, 'tmdb_api_key' | 'jacket
   if (settings.jackett_url?.trim()) process.env.JACKETT_URL = settings.jackett_url.trim()
   else if (!process.env.JACKETT_URL) {
     const candidates = [
-      '/home/wobani/appdata/jackett/Jackett/ServerConfig.json',
-      '/srv/storage/appdata/jackett/Jackett/ServerConfig.json',
-    ]
+      // Búsqueda de un Jackett local: $JACKETT_CONFIG explícito, el layout
+      // habitual de Linux/docker y, en Windows, %APPDATA%\Jackett.
+      process.env.JACKETT_CONFIG || '',
+      path.join(os.homedir(), 'appdata', 'jackett', 'Jackett', 'ServerConfig.json'),
+      '/config/Jackett/ServerConfig.json',
+      process.env.APPDATA ? path.join(process.env.APPDATA, 'Jackett', 'ServerConfig.json') : '',
+    ].filter(Boolean)
     for (const cfgPath of candidates) {
       try {
         const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))

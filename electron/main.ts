@@ -9,6 +9,7 @@ import { TorboxAPI } from './torbox'
 import { RealDebridAPI, RD_OPENSOURCE_CLIENT_ID } from './realdebrid'
 import { startWorker, cancelLocalDownload } from './worker'
 import { initAutoUpdater, checkForUpdates, checkForUpdatesManual, downloadUpdate, installUpdate, dismissUpdate } from './updater'
+import { rutaDeRecurso } from './resource-paths'
 
 // ── Single instance lock ──────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
@@ -128,8 +129,19 @@ app.on('window-all-closed', () => {
 ipcMain.handle('get-settings', () => getSettings())
 
 ipcMain.handle('set-settings', (_e, settings: Partial<Settings>) => {
-  updateSettings(settings)
-  return { success: true }
+  // Nunca se propaga: si algo falla, se responde y la app sigue viva (antes
+  // saltaba "Error occurred in handler for 'set-settings'" y los ajustes se
+  // perdían en silencio).
+  try {
+    const r = updateSettings(settings)
+    if (r.ignored.length) console.warn('[settings] claves ignoradas:', r.ignored.join(', '))
+    return r.ok
+      ? { success: true, applied: r.applied, ignored: r.ignored }
+      : { success: false, error: 'No se pudieron guardar los ajustes' }
+  } catch (e) {
+    console.error('[settings] error inesperado:', (e as Error).message)
+    return { success: false, error: (e as Error).message }
+  }
 })
 
 ipcMain.handle('search-metasearch', async (e, query: string) => {
@@ -571,10 +583,7 @@ ipcMain.handle('update-plugins', async () => {
 // ── TMDB Discover IPC ─────────────────────────
 
 function getRunnerPath(scriptName: string): string {
-  if (process.env.VITE_DEV_SERVER_URL) {
-    return path.join(__dirname, '..', 'electron', scriptName)
-  }
-  return path.join(process.resourcesPath || app.getAppPath(), scriptName)
+  return rutaDeRecurso(scriptName)
 }
 
 function spawnPython(scriptName: string, args: string[]): { cmd: string; allArgs: string[] } {

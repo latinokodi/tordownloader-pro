@@ -128,7 +128,8 @@ const DEFAULT_JACKETT_INDEXERS = [
 function ensureSearchEnv(tmdbKey: string) {
   if (!process.env.JACKETT_API_KEY) {
     try {
-      const cfg = JSON.parse(fs.readFileSync('/home/wobani/appdata/jackett/Jackett/ServerConfig.json', 'utf8'))
+      const cfgPath = process.env.JACKETT_CONFIG || path.join(os.homedir(), 'appdata', 'jackett', 'Jackett', 'ServerConfig.json')
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
       if (cfg.APIKey) {
         process.env.JACKETT_URL = process.env.JACKETT_URL || `http://127.0.0.1:${cfg.Port || 9117}`
         process.env.JACKETT_API_KEY = cfg.APIKey
@@ -316,12 +317,16 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       if (api === 'settings' && method === 'GET') return sendJson(res, 200, getSettings())
       if (api === 'settings' && method === 'POST') {
         const body = await readBody(req)
-        updateSettings(body)
+        const guardado = updateSettings(body)
+        if (!guardado.ok) {
+          return sendJson(res, 500, { success: false, error: 'No se pudieron guardar los ajustes' })
+        }
+        if (guardado.ignored.length) console.warn('[settings] claves ignoradas:', guardado.ignored.join(', '))
         // Automation loop config changed — restart the timer with new values.
         if ('monitor_enabled' in body || 'monitor_interval_minutes' in body) {
           try { startMonitor() } catch (e: any) { console.error('[settings] monitor restart failed:', e.message) }
         }
-        return sendJson(res, 200, { success: true })
+        return sendJson(res, 200, { success: true, ignored: guardado.ignored })
       }
       if (api === 'downloads' && method === 'GET') return sendJson(res, 200, getDownloads())
       if (api === 'downloads/add' && method === 'POST') {

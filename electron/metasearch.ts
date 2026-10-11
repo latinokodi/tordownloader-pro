@@ -1,14 +1,15 @@
 /**
  * metasearch.ts — Multi-engine torrent search for the headless web server.
  *
- * Spawns meta-search.py, which queries Jackett (Torznab API — FlareSolverr
- * is handled by Jackett itself) plus the latino providers (Cinecalidad /
- * Comet / TCL, resolved via TMDB), aggregates and deduplicates the results.
+ * Spawns meta-search.py, which queries Jackett (Torznab API; if you run a
+ * FlareSolverr instance, Jackett is the one using it) plus the latino sources
+ * (resolved via TMDB), aggregates and deduplicates the results.
  */
 
 import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import { app } from 'electron'
+import { existeRuta, rutaDeRecurso } from './resource-paths'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -45,10 +46,12 @@ function getRunnerPath(): string {
     // the configured python.
     return path.join(__dirname, '..', 'electron', 'meta-search.py')
   }
-  if (process.env.VITE_DEV_SERVER_URL) {
-    return path.join(__dirname, '..', 'electron', 'meta-search.py')
-  }
-  return path.join(process.resourcesPath || app.getAppPath(), 'qbit-plugins', 'qbit-runner.exe')
+  // Empaquetada: el ejecutable con los motores. Desde el código no existe, así
+  // que se usa meta-search.py, que importa los motores directamente (no hace
+  // falta compilarlos con PyInstaller para ejecutar desde el código).
+  const exe = rutaDeRecurso('qbit-plugins', 'qbit-runner.exe')
+  if (existeRuta(exe)) return exe
+  return rutaDeRecurso('meta-search.py')
 }
 
 function getRunnerCommand(): { cmd: string; args: string[] } {
