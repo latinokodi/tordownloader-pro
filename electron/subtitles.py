@@ -25,7 +25,7 @@ import urllib.request
 
 SUBTITLE_URL = 'https://opensubtitles-v3.strem.io/subtitles'
 IMDB_SUGGESTION = 'https://v3.sg.media-imdb.com/suggestion/x'
-MEDIA_ROOT = '/srv/storage/arr-data/media'
+MEDIA_ROOT = os.environ.get('MEDIAPILOT_MEDIA_ROOT') or os.path.expanduser('~/media')
 VIDEO_EXT = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv')
 SUB_EXT = ('.srt', '.vtt', '.ass', '.ssa', '.sub')
 LANGS = ('spa', 'en')  # español + inglés
