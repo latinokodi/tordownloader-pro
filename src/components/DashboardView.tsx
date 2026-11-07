@@ -118,12 +118,12 @@ export function DashboardView({ onNavigate, showToast }: { onNavigate: (nav: str
   return (
     <div className="h-full overflow-auto space-y-6 animate-fade-in pr-1">
       {!loaded && (
-        <div className="glass-panel p-10 text-center font-mono text-text-muted uppercase tracking-widest text-sm">…</div>
+        <div className="glass-panel p-3 sm:p-10 text-center font-mono text-text-muted uppercase tracking-widest text-sm">…</div>
       )}
       {loaded && (
         <>
           {/* Stats row */}
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
             <StatCard label={t.dashboard.statMonitored} value={monitored.length} accent="text-accent" icon={<BookMarked size={18} />} onClick={() => onNavigate('watchlist')} />
             <StatCard label={t.dashboard.statDownloads} value={activeDownloads} accent="text-accent-hover" icon={<DownloadCloudMini />} onClick={() => onNavigate('downloads')} />
             <StatCard label={t.dashboard.statUpcoming} value={upcoming.length} accent="text-success" icon={<RadioTower size={18} />} onClick={() => onNavigate('watchlist')} />
@@ -138,7 +138,7 @@ export function DashboardView({ onNavigate, showToast }: { onNavigate: (nav: str
 
           {items.length === 0 ? (
             /* Empty state — real CTA, no invented content */
-            <div className="glass-panel p-12 flex flex-col items-center gap-6 text-center">
+            <div className="glass-panel p-6 sm:p-12 flex flex-col items-center gap-4 sm:gap-6 text-center">
               <div className="w-16 h-16 border border-accent/40 text-accent flex items-center justify-center rounded-full">
                 <Zap size={26} />
               </div>
@@ -225,12 +225,12 @@ export function DashboardView({ onNavigate, showToast }: { onNavigate: (nav: str
 
 function StatCard({ label, value, suffix, accent, icon, onClick }: { label: string; value: number | string; suffix?: string; accent: string; icon: React.ReactNode; onClick?: () => void }) {
   return (
-    <button className={`glass-panel p-5 text-left hover:border-accent/70 transition-colors ${onClick ? 'cursor-pointer' : 'cursor-default'}`} onClick={onClick}>
-      <div className="flex items-center justify-between text-text-muted mb-3">
-        <span className="font-mono text-[10px] uppercase tracking-widest">{label}</span>
+    <button className={`glass-panel p-3.5 sm:p-5 text-left hover:border-accent/70 transition-colors ${onClick ? 'cursor-pointer' : 'cursor-default'}`} onClick={onClick}>
+      <div className="flex items-center justify-between gap-2 text-text-muted mb-2 sm:mb-3">
+        <span className="font-mono text-[10px] uppercase tracking-widest leading-tight min-w-0">{label}</span>
         {icon}
       </div>
-      <div className={`text-4xl font-black font-mono ${accent}`}>
+      <div className={`text-2xl sm:text-4xl font-black font-mono ${accent}`}>
         {value}
         {suffix && <span className="text-xs font-mono text-text-muted ml-1">{suffix}</span>}
       </div>

@@ -1,26 +1,62 @@
-import Database, { type Database as DatabaseType } from 'better-sqlite3'
+import type { Database as DatabaseType } from 'better-sqlite3'
+import { loadBetterSqlite3 } from './native-guard'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { app } from 'electron'
 
 // Web/headless mode: TDP_DATA_DIR env wins; Electron desktop falls back to
-// userData; plain Node (server.ts) falls back to ~/.tordownloader-pro.
+// userData; plain Node (server.ts) falls back to ~/.mediapilot.
 function resolveDBPath(): string {
   if (process.env.TDP_DATA_DIR) {
-    return path.join(process.env.TDP_DATA_DIR, 'tordownloader.db')
+    return path.join(process.env.TDP_DATA_DIR, 'mediapilot.db')
   }
   if (typeof app !== 'undefined' && app && typeof app.getPath === 'function') {
-    return path.join(app.getPath('userData'), 'tordownloader.db')
+    return path.join(app.getPath('userData'), 'mediapilot.db')
   }
-  return path.join(os.homedir(), '.tordownloader-pro', 'tordownloader.db')
+  return path.join(os.homedir(), '.mediapilot', 'mediapilot.db')
 }
 
 const DB_PATH = resolveDBPath()
-let db: Database.Database
+let db: DatabaseType
+
+
+/**
+ * Importa la base de una instalación anterior si la de esta versión todavía no
+ * existe. Al rebautizar la app (TorDownloader PRO → MediaPilot) cambia la carpeta
+ * de datos: sin esto, quien ya la tenía instalada arrancaría con la biblioteca,
+ * la watchlist y los tokens vacíos. Nunca sobrescribe nada: sólo copia cuando el
+ * destino no existe.
+ */
+function migrateLegacyDB(target: string): void {
+  try {
+    if (fs.existsSync(target)) return
+    const candidatos = [path.join(path.dirname(target), 'tordownloader.db'),
+                        path.join(os.homedir(), '.tordownloader-pro', 'tordownloader.db')]
+    try {
+      if (typeof app !== 'undefined' && app && typeof app.getPath === 'function') {
+        candidatos.push(path.join(app.getPath('appData'), 'TorDownloader PRO', 'tordownloader.db'))
+      }
+    } catch { /* app no lista todavía */ }
+    for (const origen of candidatos) {
+      if (origen !== target && fs.existsSync(origen)) {
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.copyFileSync(origen, target)
+        console.log(`[DB] base de la versión anterior importada: ${origen} → ${target}`)
+        return
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[DB] no se pudo importar la base anterior: ${e?.message || e}`)
+  }
+}
 
 export function initDB(): void {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
+  migrateLegacyDB(DB_PATH)
+  // Carga diferida: si el módulo nativo no cuadra con este runtime, el mensaje
+  // de error aparece aquí y con el comando que lo arregla (native-guard).
+  const Database = loadBetterSqlite3()
   db = new Database(DB_PATH)
   db.pragma('journal_mode = WAL')
 
@@ -89,7 +125,10 @@ export function initDB(): void {
 
     CREATE TABLE IF NOT EXISTS grab_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      watchlist_id INTEGER NOT NULL,
+      -- NULL = descarga hecha a mano: no nace de la watchlist. Un NOT NULL aquí
+      -- hacía fallar el registro ("constraint failed: grab_history.watchlist_id")
+      -- y el monitor volvía a intentar bajar lo que ya estaba en disco.
+      watchlist_id INTEGER,
       tmdb_id INTEGER NOT NULL,
       media_type TEXT NOT NULL,
       season INTEGER,
@@ -175,6 +214,46 @@ export function initDB(): void {
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) { /* Column already exists */ }
+  }
+
+  // grab_history.watchlist_id se creó como NOT NULL, así que una descarga manual
+  // (una película que no está en la watchlist) no se podía registrar: INSERT
+  // fallaba y el monitor no sabía que ese archivo ya estaba en disco. SQLite no
+  // permite quitar el NOT NULL con ALTER, así que se reconstruye la tabla una
+  // sola vez, conservando filas e índices.
+  const columnas = db.prepare(`PRAGMA table_info(grab_history)`).all() as Array<{ name: string; notnull: number }>
+  const wlCol = columnas.find((c) => c.name === 'watchlist_id')
+  if (wlCol && wlCol.notnull === 1) {
+    const nombres = columnas.map((c) => `"${c.name}"`).join(', ')
+    db.exec(`
+      BEGIN;
+      CREATE TABLE grab_history_nueva (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        watchlist_id INTEGER,
+        tmdb_id INTEGER NOT NULL,
+        media_type TEXT NOT NULL,
+        season INTEGER,
+        episode INTEGER,
+        kind TEXT NOT NULL DEFAULT 'episode',
+        title TEXT DEFAULT '',
+        language TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'grabbed',
+        torbox_id VARCHAR DEFAULT '',
+        info_hash VARCHAR DEFAULT '',
+        error VARCHAR DEFAULT '',
+        dest_folder VARCHAR DEFAULT '',
+        file_name VARCHAR DEFAULT '',
+        grabbed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO grab_history_nueva (${nombres}) SELECT ${nombres} FROM grab_history;
+      DROP TABLE grab_history;
+      ALTER TABLE grab_history_nueva RENAME TO grab_history;
+      CREATE INDEX IF NOT EXISTS idx_grab_uniq ON grab_history(tmdb_id, media_type, season, episode);
+      CREATE INDEX IF NOT EXISTS idx_grab_wl ON grab_history(watchlist_id);
+      COMMIT;
+    `)
+    console.log('[DB] grab_history reconstruida: watchlist_id ahora admite NULL (descargas manuales)')
   }
   
   // Create a default settings row if not exists

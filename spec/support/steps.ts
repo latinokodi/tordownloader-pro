@@ -4,12 +4,14 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import {
+  searchTitleCandidates,
   seriesNameMatches,
   computeDestination,
   parseReleaseName,
   type ParsedRelease,
 } from '../../electron/media-layout'
 import { durationMatches, durationToleranceMin } from '../../electron/preflight'
+import { isDebridCDN } from '../../electron/downloader'
 import { meetsMinQuality, parseQualitySetting, type VideoQuality } from '../../electron/quality'
 import { healLibrary } from '../../electron/library-heal'
 import { orderTargetsForQueue, type QueueTarget } from '../../electron/monitor'
@@ -26,7 +28,9 @@ import {
   isStaleTorrent,
   type AccountStatus,
 } from '../../electron/debrid-status'
-import { episodeFromFileName, reorderedAudioIndexes } from '../../electron/postprocess'
+import { episodeFromFileName, reorderedAudioIndexes, canonicalEpisodeFileName, type EpisodeRef } from '../../electron/postprocess'
+import { releaseCoverage, planDuplicateSkip, type Coverage, type ExistingCoverage } from '../../electron/download-dedupe'
+import { compareVersions, pickKeeper, planRemoval, siblingEpisodes, episodeTag, type VersionInfo } from '../../electron/version-dedupe'
 import { shouldDeferAttempt, nextAttemptAfterFailure } from '../../electron/attempts'
 import { normalizePosterUrl, posterBackfillPatch } from '../../electron/posters'
 import {
@@ -44,6 +48,8 @@ import {
 } from '../../electron/watchlist'
 import { getSettings, updateSettings } from '../../electron/db'
 import { isBenignUpdateError } from '../../electron/updater'
+import { chooseBest, isCamRelease, type GrabTarget, type GrabResultItem } from '../../electron/grabber'
+import { diagnoseNativeError, nativeHelp, type NativeDiagnostico } from '../../electron/native-guard'
 import { chooseRdFileIds } from '../../electron/realdebrid'
 
 export interface World {
@@ -74,9 +80,23 @@ export interface World {
   usable?: Array<{ title: string; cached?: boolean }>
   inCooldown?: boolean
   parsed?: ParsedRelease
+  versiones?: VersionInfo[]
+  versionKeeper?: VersionInfo | null
+  versionRemoval?: VersionInfo[]
+  versionSiblings?: string[]
   minQuality?: VideoQuality
   qualityOk?: boolean
   fileEpisode?: { season: number; episode: number } | null
+  cdnUrl?: string
+  dedupeName?: string
+  dedupeCoverage?: Coverage | null
+  dedupeExisting?: ExistingCoverage[]
+  dedupePlan?: { skip: boolean; reason: string }
+  canonicalLabel?: string
+  canonicalRef?: EpisodeRef
+  canonicalName?: string
+  searchTarget?: { title?: string; original_title?: string; alt_titles?: string[] }
+  searchPicked?: string[]
   jfKey?: string
   jfHeaders?: Record<string, string>
   jfBase?: string
@@ -105,6 +125,12 @@ export interface World {
   esperadoLeve?: boolean
   ajusteGuardado?: { clave: string; valor: any }
   resultadoAjustes?: { ok: boolean; applied: number; ignored: string[] }
+  grabTarget?: GrabTarget
+  grabReleases?: GrabResultItem[]
+  grabChosen?: GrabResultItem | null
+  camVerdict?: boolean
+  nativeDiag?: NativeDiagnostico
+  nativeAviso?: string
 }
 
 export interface StepRun {
@@ -990,6 +1016,365 @@ export const stepDefs: Array<{ pattern: RegExp; fn: StepFn }> = [
       }
     },
   },
+  {
+    pattern: /^la URL de descarga es "([^"]*)"$/,
+    fn: ({ world }, url) => {
+      world.cdnUrl = url
+    },
+  },
+  {
+    pattern: /^la descarga se (acepta|rechaza)$/,
+    fn: ({ world }, verdict) => {
+      const ok = isDebridCDN(world.cdnUrl ?? '')
+      const want = verdict === 'acepta'
+      if (ok !== want) {
+        throw new Error(`isDebridCDN(${world.cdnUrl}) = ${ok} · esperado ${want}`)
+      }
+    },
+  },
+  {
+    pattern: /^el release se llama "([^"]*)"$/,
+    fn: ({ world }, name) => {
+      world.dedupeName = name
+    },
+  },
+  {
+    pattern: /^miro qué cubre$/,
+    fn: ({ world }) => {
+      world.dedupeCoverage = releaseCoverage(world.dedupeName ?? '')
+    },
+  },
+  {
+    pattern: /^cubre la temporada "([^"]*)" y el episodio "([^"]*)"$/,
+    fn: ({ world }, season, episode) => {
+      const cov = world.dedupeCoverage
+      if (!cov) throw new Error('el release no cubre nada')
+      const wantSeason = Number(season)
+      const wantEpisode = episode === '—' ? null : Number(episode)
+      if (cov.season !== wantSeason || cov.episode !== wantEpisode) {
+        throw new Error(`cubre T${cov.season}E${cov.episode} · esperado T${wantSeason}E${wantEpisode}`)
+      }
+    },
+  },
+  {
+    pattern: /^no cubre nada$/,
+    fn: ({ world }) => {
+      if (world.dedupeCoverage) {
+        throw new Error(`cubre T${world.dedupeCoverage.season}E${world.dedupeCoverage.episode}`)
+      }
+    },
+  },
+  {
+    pattern: /^la cola tiene los episodios "([^"]*)"( en estado fallido)?$/,
+    fn: ({ world }, list, failed) => {
+      world.dedupeExisting = String(list || '')
+        .split(',')
+        .filter(Boolean)
+        .map((token) => {
+          const m = /S(\d+)E(\d+)/i.exec(token.trim())
+          return {
+            season: m ? Number(m[1]) : null,
+            episode: m ? Number(m[2]) : null,
+            pack: false,
+            source: 'download' as const,
+            status: failed ? 'failed' : 'pending',
+            name: token.trim(),
+          }
+        })
+    },
+  },
+  {
+    pattern: /^la cola tiene el pack de la temporada "(\d+)"$/,
+    fn: ({ world }, season) => {
+      world.dedupeExisting = [{
+        season: Number(season),
+        episode: null,
+        pack: true,
+        source: 'download' as const,
+        status: 'downloading',
+        name: `Demo S${season} pack`,
+      }]
+    },
+  },
+  {
+    pattern: /^el disco tiene los episodios "([^"]*)"$/,
+    fn: ({ world }, list) => {
+      const fromDisk = String(list || '')
+        .split(',')
+        .filter(Boolean)
+        .map((token) => {
+          const m = /S(\d+)E(\d+)/i.exec(token.trim())
+          return {
+            season: m ? Number(m[1]) : null,
+            episode: m ? Number(m[2]) : null,
+            pack: false,
+            source: 'disco' as const,
+            status: 'downloaded',
+            name: token.trim(),
+          }
+        })
+      world.dedupeExisting = [...(world.dedupeExisting ?? []), ...fromDisk]
+    },
+  },
+  {
+    pattern: /^llega el release "([^"]*)"$/,
+    fn: ({ world }, name) => {
+      const cov = releaseCoverage(name)
+      if (!cov) throw new Error(`${name} no cubre nada`)
+      world.dedupePlan = planDuplicateSkip(cov, world.dedupeExisting ?? [])
+    },
+  },
+  {
+    pattern: /^se omite por duplicado$/,
+    fn: ({ world }) => {
+      if (!world.dedupePlan?.skip) throw new Error('no se detectó duplicado')
+    },
+  },
+  {
+    pattern: /^no se omite$/,
+    fn: ({ world }) => {
+      if (world.dedupePlan?.skip) throw new Error(`se omitió: ${world.dedupePlan.reason}`)
+    },
+  },
+  {
+    pattern: /^la serie se llama "([^"]*)" y el episodio es de la temporada (\d+) número (\d+)$/,
+    fn: ({ world }, label, season, episode) => {
+      world.canonicalLabel = label
+      world.canonicalRef = { season: Number(season), episode: Number(episode) }
+    },
+  },
+  {
+    pattern: /^calculo el nombre canónico con extensión "([^"]*)"$/,
+    fn: ({ world }, ext) => {
+      if (!world.canonicalRef) throw new Error('falta temporada/episodio')
+      world.canonicalName = canonicalEpisodeFileName(world.canonicalLabel ?? '', world.canonicalRef, ext)
+    },
+  },
+  {
+    pattern: /^el nombre canónico es "([^"]*)"$/,
+    fn: ({ world }, want) => {
+      if (world.canonicalName !== want) throw new Error(`nombre ${world.canonicalName} · esperado ${want}`)
+    },
+  },
+  {
+    pattern: /^una serie con título "([^"]*)" y títulos alternativos "([^"]*)"$/,
+    fn: ({ world }, title, alt) => {
+      const alts = String(alt || '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t && !/^<.*>$/.test(t))
+      world.searchTarget = { title, original_title: title, alt_titles: alts }
+    },
+  },
+  {
+    pattern: /^elijo el título para buscar$/,
+    fn: ({ world }) => {
+      world.searchPicked = searchTitleCandidates(world.searchTarget ?? {})
+    },
+  },
+  {
+    pattern: /^el primer título de búsqueda es "([^"]*)"$/,
+    fn: ({ world }, want) => {
+      const got = world.searchPicked?.[0]
+      if (got !== want) throw new Error(`primer título ${got} · esperado ${want}`)
+    },
+  },
+  // ── Una sola versión por episodio (B28) ────────────────────────────────
+  {
+    pattern: /^dos versiones del mismo episodio:$/,
+    fn: ({ world, rows }) => {
+      // el parser no entrega la fila de cabecera; si viniera, se descarta
+      const filas = (rows || []).filter((r) => !/^nombre$/i.test(String(r[0] || '').trim()))
+      world.versiones = filas.map((r) => ({
+        path: `/biblioteca/${r[0]}.mkv`,
+        height: Number(r[1]) || 0,
+        bitrate: Number(r[2]) || 0,
+        vcodec: String(r[3] || ''),
+        hasSpanish: /s[ií]/i.test(String(r[4] || '')),
+        mtime: filas.indexOf(r),
+      }))
+    },
+  },
+  {
+    pattern: /^una única versión del episodio "([^"]*)"$/,
+    fn: ({ world }, nombre) => {
+      world.versiones = [{ path: `/biblioteca/${nombre}.mkv`, height: 1080, bitrate: 5_000_000, vcodec: 'h264', hasSpanish: false, mtime: 1 }]
+    },
+  },
+  {
+    pattern: /^tres versiones del mismo episodio$/,
+    fn: ({ world }) => {
+      world.versiones = [
+        { path: '/biblioteca/HDTV.mkv', height: 1080, bitrate: 4_500_000, vcodec: 'h264', hasSpanish: true, mtime: 1 },
+        { path: '/biblioteca/WEB.mkv', height: 1080, bitrate: 9_600_000, vcodec: 'h264', hasSpanish: true, mtime: 2 },
+        { path: '/biblioteca/x265.mkv', height: 1080, bitrate: 6_000_000, vcodec: 'hevc', hasSpanish: true, mtime: 3 },
+      ]
+    },
+  },
+  {
+    pattern: /^elijo la que se queda$/,
+    fn: ({ world }) => {
+      world.versionKeeper = pickKeeper(world.versiones || [])
+      world.versionRemoval = planRemoval(world.versiones || [])
+    },
+  },
+  {
+    pattern: /^se queda "([^"]*)"$/,
+    fn: ({ world }, esperado) => {
+      const k = world.versionKeeper
+      if (!k) throw new Error('no se eligió ninguna versión')
+      const obtenido = String(k.path).split('/').pop()!.replace(/\.mkv$/, '')
+      if (obtenido !== esperado) throw new Error(`se quedó "${obtenido}" · esperado "${esperado}"`)
+    },
+  },
+  {
+    pattern: /^no hay nada que borrar$/,
+    fn: ({ world }) => {
+      const r = world.versionRemoval || []
+      if (r.length !== 0) throw new Error(`se iban a borrar ${r.length} versiones`)
+    },
+  },
+  {
+    pattern: /^queda una sola versión y dos se borran$/,
+    fn: ({ world }) => {
+      const total = (world.versiones || []).length
+      const borrar = (world.versionRemoval || []).length
+      if (borrar !== total - 1 || borrar !== 2) throw new Error(`quedan ${total - borrar} versiones (se borran ${borrar})`)
+    },
+  },
+  {
+    pattern: /^la carpeta tiene "([^"]*)" y "([^"]*)"$/,
+    fn: ({ world }, a, b) => {
+      world.versionSiblings = [a, b]
+    },
+  },
+  {
+    pattern: /^busco versiones del episodio de "([^"]*)"$/,
+    fn: ({ world }, archivo) => {
+      const todos = (world.versionSiblings || []).map((n) => `/biblioteca/${n}`)
+      world.versionSiblings = siblingEpisodes(`/biblioteca/${archivo}`, todos)
+    },
+  },
+  {
+    pattern: /^solo encuentro el suyo$/,
+    fn: ({ world }) => {
+      const s = world.versionSiblings || []
+      if (s.length !== 0) throw new Error(`encontré ${s.length} versiones ajenas: ${s.map((x) => x.split('/').pop()).join(', ')}`)
+    },
+  },
+  // ── B28 · los releases de cámara no se eligen solos ──────────────────────
+  {
+    pattern: /^un objetivo de película "([^"]*)" de (\d{4})$/,
+    fn: ({ world }, title, year) => {
+      world.grabTarget = {
+        watchlist_id: 1,
+        tmdb_id: 0,
+        media_type: 'movie',
+        title,
+        year,
+        kind: 'movie',
+        language_profile: 'latino_first',
+      }
+    },
+  },
+  {
+    pattern: /^los releases disponibles "([^"]*)"$/,
+    fn: ({ world }, list) => {
+      world.grabReleases = list.split('|').map((s) => s.trim()).filter(Boolean).map((title, i) => ({
+        title,
+        size: '4.0 GB',
+        seeders: 100 - i,
+        peers: 110 - i,
+        link: '',
+        indexer: 'prueba',
+        // sin infohash el release ni se puntúa (score -900), así que cada uno lleva el suyo
+        info_hash: String(i + 1).padStart(40, '0'),
+        latino: false,
+      }))
+    },
+  },
+  {
+    pattern: /^elijo el mejor release$/,
+    fn: ({ world }) => {
+      if (!world.grabTarget) throw new Error('falta el objetivo de la película')
+      world.grabChosen = chooseBest(world.grabReleases || [], world.grabTarget)
+    },
+  },
+  {
+    pattern: /^se elige "([^"]*)"$/,
+    fn: ({ world }, esperado) => {
+      const elegido = world.grabChosen
+      if (!elegido) throw new Error(`se esperaba "${esperado}" y no se eligió ningún release`)
+      if (elegido.title !== esperado) throw new Error(`se esperaba "${esperado}" y se eligió "${elegido.title}"`)
+    },
+  },
+  {
+    pattern: /^no se elige ningún release$/,
+    fn: ({ world }) => {
+      if (world.grabChosen) throw new Error(`no debía elegirse nada y se eligió "${world.grabChosen.title}"`)
+    },
+  },
+  {
+    pattern: /^evalúo si "([^"]*)" es de cámara$/,
+    fn: ({ world }, release) => {
+      world.camVerdict = isCamRelease(release)
+    },
+  },
+  {
+    pattern: /^el veredicto es "(sí|si|no)"$/,
+    fn: ({ world }, esperado) => {
+      const want = esperado === 'no' ? false : true
+      if (world.camVerdict !== want) {
+        throw new Error(`se esperaba ${want ? 'sí' : 'no'} y salió ${world.camVerdict ? 'sí' : 'no'}`)
+      }
+    },
+  },
+
+  // ── B30 · el módulo nativo que no carga dice cómo arreglarlo ─────────────
+  {
+    pattern: /^diagnostico el error nativo "([^"]*)"(?: en Electron "([^"]*)")?$/,
+    fn: ({ world }, mensaje, electron) => {
+      world.nativeDiag = diagnoseNativeError(new Error(mensaje), electron || undefined)
+      world.nativeAviso = nativeHelp(world.nativeDiag)
+    },
+  },
+  {
+    pattern: /^el problema es "([^"]*)"$/,
+    fn: ({ world }, esperado) => {
+      if (!world.nativeDiag) throw new Error('no se diagnosticó ningún error nativo')
+      if (world.nativeDiag.problema !== esperado) {
+        throw new Error(`se esperaba "${esperado}" y salió "${world.nativeDiag.problema}"`)
+      }
+    },
+  },
+  {
+    pattern: /^el arreglo es "([^"]*)"$/,
+    fn: ({ world }, esperado) => {
+      if (!world.nativeDiag) throw new Error('no se diagnosticó ningún error nativo')
+      if (world.nativeDiag.arreglo !== esperado) {
+        throw new Error(`se esperaba "${esperado}" y salió "${world.nativeDiag.arreglo}"`)
+      }
+    },
+  },
+  {
+    pattern: /^el aviso menciona "([^"]*)" y "([^"]*)"$/,
+    fn: ({ world }, a, b) => {
+      const aviso = world.nativeAviso || ''
+      for (const trozo of [a, b]) {
+        if (!aviso.includes(trozo)) throw new Error(`el aviso no menciona "${trozo}": ${aviso}`)
+      }
+    },
+  },
+  {
+    pattern: /^el aviso incluye el comando$/,
+    fn: ({ world }) => {
+      const aviso = world.nativeAviso || ''
+      const cmd = world.nativeDiag?.arreglo || ''
+      if (!cmd || !aviso.includes(cmd)) throw new Error(`el aviso no trae el comando "${cmd}"`)
+      if (aviso.includes('reading') && aviso.includes('undefined')) throw new Error('el aviso repite el error de JavaScript en vez de explicarlo')
+    },
+  },
+
 ]
 
 function needPlan(world: World): ReconcilePlan {

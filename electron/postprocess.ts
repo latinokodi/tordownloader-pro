@@ -31,6 +31,75 @@ export function episodeFromFileName(file: string): EpisodeRef | null {
   return null
 }
 
+/**
+ * Nombre canónico para Jellyfin: "Serie (Año) - SxxEyy.ext".
+ *
+ * El escáner saca la SERIE de la carpeta pero el NÚMERO de episodio del
+ * NOMBRE del archivo. Con el nombre crudo del release a veces crea entradas sin
+ * número: pasó con Humans (2015), 14 episodios quedaron como "Humans" sin T/E
+ * hasta renombrarlos a este formato.
+ */
+export function canonicalEpisodeFileName(seriesLabel: string, ref: EpisodeRef, ext: string): string {
+  const label = String(seriesLabel || '').replace(/[<>:"/\\|?*]+/g, '').trim() || 'Serie'
+  const season = String(ref.season).padStart(2, '0')
+  const episode = String(ref.episode).padStart(2, '0')
+  const extension = ext.startsWith('.') ? ext : `.${ext}`
+  return `${label} - S${season}E${episode}${extension}`
+}
+
+/** Carpeta de temporada → etiqueta de la serie ("Humans (2015)"). */
+export function seriesLabelFromPath(file: string): string {
+  const dir = path.dirname(file)
+  return /\bseason\b|\btemporada\b/i.test(path.basename(dir))
+    ? path.basename(path.dirname(dir))
+    : path.basename(dir)
+}
+
+/**
+ * Deja los episodios con el nombre canónico, subtítulos laterales incluidos.
+ * Devuelve las rutas nuevas para que el resto del postproceso (subtítulos,
+ * historial) trabaje con los nombres definitivos desde el principio.
+ */
+export async function renameEpisodesForJellyfin(files: string[]): Promise<{ renamed: number; files: string[] }> {
+  let renamed = 0
+  const out: string[] = []
+  for (const file of files) {
+    const ext = path.extname(file)
+    const ref = episodeFromFileName(path.basename(file))
+    if (!fs.existsSync(file) || !ref || !/^\.(mkv|mp4|avi|m4v)$/i.test(ext)) {
+      out.push(file)
+      continue
+    }
+    const dir = path.dirname(file)
+    const target = path.join(dir, canonicalEpisodeFileName(seriesLabelFromPath(file), ref, ext))
+    if (path.resolve(target) === path.resolve(file)) {
+      out.push(file)
+      continue
+    }
+    if (fs.existsSync(target)) {
+      out.push(file) // no se pisa nada: dos versiones del mismo episodio se quedan
+      continue
+    }
+    const oldBase = path.basename(file, ext)
+    const newBase = path.basename(target, ext)
+    try {
+      const sidecars = fs.readdirSync(dir).filter((n) => n.startsWith(oldBase) && n !== path.basename(file))
+      fs.renameSync(file, target)
+      for (const name of sidecars) {
+        const suffix = name.slice(oldBase.length)
+        if (!/^\.(?:[a-z]{2,3}(?:-[a-z]{2,4})?\.)?(srt|sub|idx|ass|vtt)$/i.test(suffix)) continue
+        try { fs.renameSync(path.join(dir, name), path.join(dir, newBase + suffix)) } catch { /* sidecar suelto */ }
+      }
+      renamed += 1
+      out.push(target)
+    } catch (e: any) {
+      console.warn(`[Worker] no se pudo renombrar ${path.basename(file)}: ${e?.message || e}`)
+      out.push(file)
+    }
+  }
+  return { renamed, files: out }
+}
+
 export interface AudioStream {
   index: number
   language?: string

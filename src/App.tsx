@@ -37,6 +37,7 @@ function App() {
   const [addingMagnet, setAddingMagnet] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [activeNav, setActiveNav] = useState('dashboard')
+  const [navOpen, setNavOpen] = useState(false) // cajón de navegación en móvil
   const [downloads, setDownloads] = useState<any[]>([])
   const [destFolder, setDestFolder] = useState('')
 
@@ -49,6 +50,14 @@ function App() {
     const timer = setTimeout(() => setToast(null), 3000)
     return () => clearTimeout(timer)
   }, [toast])
+
+  // Escape cierra el cajón de navegación (móvil)
+  useEffect(() => {
+    if (!navOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setNavOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navOpen])
 
   // ── Auto-update ──
   const [updateVersion, setUpdateVersion] = useState<string | null>(null)
@@ -242,17 +251,28 @@ function App() {
     : null
 
   return (
-    <div className="flex h-screen w-full bg-bg-deep text-text-main font-display overflow-hidden relative">
+    <div className="flex h-[100dvh] w-full bg-bg-deep text-text-main font-display overflow-hidden relative">
       <Sidebar
         activeNav={activeNav}
         onNavChange={setActiveNav}
         onSettingsOpen={() => setShowSettings(true)}
         downloadCount={downloads.length}
         appVersion={appVersion}
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
       />
 
-      <main className="flex-1 flex flex-col relative z-10 h-full overflow-hidden">
-        <Header activeCloud={activeCloud} activeLocal={activeLocal} />
+      {/* Backdrop del cajón (sólo móvil/tablet) */}
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-slate-900/45 backdrop-blur-[2px] lg:hidden"
+          onClick={() => setNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <main className="flex-1 flex flex-col relative z-10 h-full overflow-hidden min-w-0">
+        <Header activeCloud={activeCloud} activeLocal={activeLocal} onMenuClick={() => setNavOpen(true)} />
 
         {/* Magnet bar — only on Search tab */}
         <MagnetBar
@@ -267,7 +287,7 @@ function App() {
           visible={activeNav === 'search'}
         />
 
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-y-auto overscroll-contain p-3 sm:p-5 lg:p-6 min-w-0">
           {/* ── DASHBOARD (default) ── */}
           {activeNav === 'dashboard' && (
             <div className="h-full flex flex-col space-y-6 animate-fade-in">
@@ -282,21 +302,23 @@ function App() {
           {/* ── SEARCH ── */}
           {activeNav === 'search' && (
             <div className="h-full flex flex-col space-y-6 animate-fade-in">
-              <form className="flex gap-4" onSubmit={handleSearch}>
+              <form className="flex flex-col sm:flex-row gap-3 sm:gap-4" onSubmit={handleSearch}>
                 <input
                   type="text"
-                  className="input-field flex-1"
+                  className="input-field flex-1 min-w-0"
                   placeholder={t.search.placeholder}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
-                <button type="submit" className="btn btn-accent">{t.search.initSearch}</button>
-                <ServiceSelector
-                  service={downloadService}
-                  onChange={setDownloadService}
-                  hasTorbox={hasTorbox}
-                  hasRealdebrid={hasRealdebrid}
-                />
+                <div className="flex gap-3">
+                  <button type="submit" className="btn btn-accent flex-1 sm:flex-none">{t.search.initSearch}</button>
+                  <ServiceSelector
+                    service={downloadService}
+                    onChange={setDownloadService}
+                    hasTorbox={hasTorbox}
+                    hasRealdebrid={hasRealdebrid}
+                  />
+                </div>
               </form>
               <SearchTabsBar />
               <div className="flex-1 overflow-auto glass-panel p-4">
@@ -338,9 +360,9 @@ function App() {
           {activeNav === 'downloads' && (
             <div className="h-full flex flex-col space-y-6 animate-fade-in">
               <div className="glass-panel flex-1 overflow-auto p-4 space-y-4">
-                <div className="flex justify-between items-center pb-2 border-b border-border/50">
+                <div className="flex flex-wrap justify-between items-center gap-2 pb-2 border-b border-border/50">
                   <h3 className="text-sm font-bold text-text-muted uppercase tracking-wider">{t.transfers.activeQueue}</h3>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button
                       onClick={handleOpenFolder}
                       className="btn border border-border text-xs px-3 hover:border-accent hover:text-accent font-mono"

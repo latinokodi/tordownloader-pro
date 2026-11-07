@@ -184,13 +184,48 @@ spec/                     contrato + escenarios Gherkin ejecutables
 
 ## Notas
 
-- El directorio de datos es `~/.tordownloader-pro/` y la base se llama `tordownloader.db`: nombres
+- El directorio de datos es `~/.mediapilot/` y la base se llama `mediapilot.db`: nombres
   heredados del proyecto original que se mantienen por compatibilidad con las instalaciones
   existentes (se pueden cambiar con la variable `TDP_DATA_DIR`).
 - Los `.exe` de los motores de búsqueda no están en el repositorio: son artefactos de compilación
   (`npm run pyinstaller`) y el workflow de CI los genera.
 - En Linux puede correr como servidor web sin Electron: `npm run server` (puerto `TDP_PORT`,
   por defecto 9650).
+
+## Si algo falla
+
+### La pantalla se llena de errores y no aparece nada en la biblioteca
+
+```
+The module '...\better_sqlite3.node' was compiled against a different Node.js version
+using NODE_MODULE_VERSION 127. This version of Node.js requires NODE_MODULE_VERSION ...
+[FATAL] Uncaught exception: Cannot read properties of undefined (reading 'prepare')
+```
+
+Ese último mensaje no es el problema: lo que pasa es que el módulo nativo de la base de datos
+(`better-sqlite3`) se compiló contra la ABI de **otra** versión de Node. Pasa al instalar las
+dependencias con una versión de Node y ejecutar con otra, o si el proyecto vive dentro de
+**OneDrive** y los binarios llegan sincronizados desde otro equipo.
+
+```bat
+npm rebuild better-sqlite3
+```
+
+Y si es la app de escritorio (`npm start`, Electron lleva su propia ABI):
+
+```bat
+npm run rebuild:electron
+```
+
+`start.bat` ya lo comprueba antes de arrancar y recompila solo; si aun así falla, borra
+`node_modules` y vuelve a ejecutarlo. Los handlers `get-settings`, `get-downloads` y
+`Worker polling loop failed` de la consola son consecuencia de lo mismo: sin base de datos no
+hay nada que leer.
+
+### El proyecto está en OneDrive
+
+Muévelo a una ruta local (`C:\MediaPilot`, por ejemplo). OneDrive sincroniza `node_modules` y
+los binarios compilados, y un `.node` de otro equipo rompe la base.
 
 ## Créditos
 

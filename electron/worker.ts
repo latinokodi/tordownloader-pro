@@ -2,7 +2,7 @@ import { TorboxAPI } from './torbox';
 import { RealDebridAPI, chooseRdFileIds } from './realdebrid';
 import { getSettings, getDownloads, addDownload, updateDownload, deleteDownload, getDownloadByTorboxId, releaseStalledPreflights } from './db';
 import { appendDownloadedFile, finalizeReplacement, markGrabFailed, getGrabByTorboxId, findWatchlistItem } from './watchlist';
-import { episodeFromFileName, registerDownloadedEpisodes, normalizeAudioOrder, resolveFolderOwner } from './postprocess';
+import { episodeFromFileName, registerDownloadedEpisodes, normalizeAudioOrder, resolveFolderOwner, renameEpisodesForJellyfin } from './postprocess';
 import { tmdbDetail } from './tmdb';
 import { addBadRelease } from './db';
 import { isStaleTorrent } from './debrid-status';
@@ -13,7 +13,11 @@ import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { eventBus } from './event-bus';
 import { computeDestination, safeSegment, seriesNameMatches, getAltTitlesCached } from './media-layout';
-import { createExtractorFromFile } from 'node-unrar-js';
+import { removeLesserVersions } from './version-dedupe';
+// El paquete declara `module: ./esm/index.esm.js` (build de navegador), que NO
+// exporta createExtractorFromFile: Rollup fallaba con "is not exported" al
+// empaquetar el main. El fichero Node es esm/index.js, que sí lo exporta.
+import { createExtractorFromFile } from 'node-unrar-js/esm/index.js';
 
 let workerInterval: NodeJS.Timeout | null = null;
 const activeLocalDownloads = new Map<string, boolean>();
@@ -450,7 +454,7 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
     const totalBytes = files.reduce((acc: number, f: any) => acc + getFileSize(f), 0);
     let completedBytes = 0;
     let videosDownloaded = 0;
-    const downloadedVideoPaths: string[] = [];
+    let downloadedVideoPaths: string[] = [];
 
     for (let idx = 0; idx < files.length; idx++) {
       const fileInfo = files[idx];
@@ -559,6 +563,18 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
     });
     console.log(`[Worker] TorBox download complete: ${dlData.name || tid} → ${destFolder}`)
 
+    // ── Nombre canónico para Jellyfin (spec B27) ──
+    // Se hace ANTES de los subtítulos y del historial: así el .srt se guarda con
+    // el nombre definitivo y el monitor registra el nombre que ve Jellyfin.
+    try {
+      const renamed = await renameEpisodesForJellyfin(downloadedVideoPaths)
+      if (renamed.renamed > 0) {
+        downloadedVideoPaths = renamed.files
+        console.log(`[Worker] ${renamed.renamed} archivo(s) con el nombre canónico de Jellyfin`)
+      }
+    } catch (e: any) {
+      console.warn(`[Worker] renombrado de episodios falló: ${e?.message || e}`)
+    }
     // ── Subtítulos automáticos (spa + en) ──────────────
     await fetchSubtitlesForDownload(dlData.name || tid, type, destFolder, downloadedVideoPaths, tid);
     // ── Lo que antes había que hacer a mano con los packs (spec B13/B15) ──
@@ -590,6 +606,17 @@ async function runTorboxDownload(tid: string, dlData: any, settings: any, token:
       if (reordered > 0) console.log(`[Worker] ${reordered} archivo(s) con el audio reordenado al idioma preferido`)
     } catch (e: any) {
       console.warn(`[Worker] reordenación de audio falló: ${e?.message || e}`)
+    }
+    // ── Una sola versión por episodio: si llega una copia mejor, la anterior se va ──
+    try {
+      for (const videoPath of downloadedVideoPaths) {
+        const borrados = await removeLesserVersions(videoPath)
+        if (borrados.length > 0) {
+          console.log(`[Worker] ${borrados.length} versión(es) anterior(es) de ${path.basename(videoPath)} eliminada(s)`)
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[Worker] limpieza de versiones peores falló: ${e?.message || e}`)
     }
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──
     try { finalizeReplacement(tid) } catch (e: any) { console.warn(`[Worker] finalizeReplacement failed: ${e.message}`) }
@@ -794,7 +821,7 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
 
     const totalLinks = links.length;
     let completedBytes = 0;
-    const downloadedVideoPaths: string[] = [];
+    let downloadedVideoPaths: string[] = [];
     const downloadedArchivePaths: string[] = [];
 
     for (let idx = 0; idx < links.length; idx++) {
@@ -908,6 +935,16 @@ async function runRealdebridDownload(tid: string, dlData: any, settings: any, to
     });
     console.log(`[Worker] RD download complete: ${dlData.filename || tid} → ${destFolder}`)
 
+    // ── Nombre canónico para Jellyfin (spec B27) ──
+    try {
+      const renamed = await renameEpisodesForJellyfin(downloadedVideoPaths)
+      if (renamed.renamed > 0) {
+        downloadedVideoPaths = renamed.files
+        console.log(`[Worker] ${renamed.renamed} archivo(s) con el nombre canónico de Jellyfin`)
+      }
+    } catch (e: any) {
+      console.warn(`[Worker] renombrado de episodios falló: ${e?.message || e}`)
+    }
     // ── Subtítulos automáticos (spa + en) ──────────────
     await fetchSubtitlesForDownload(dlData.filename || dlData.name || tid, type, destFolder, downloadedVideoPaths, tid);
     // ── Reemplazo manual EN → latino (el worker borra el EN ya completado) ──

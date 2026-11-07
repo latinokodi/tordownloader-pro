@@ -156,13 +156,13 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
         </div>
         <div className="flex items-center gap-1 rounded-lg bg-bg-input p-1">
           <button
-            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${tab === 'series' ? 'bg-accent text-white' : 'text-text-muted hover:text-text-heading'}`}
+            className={`px-3 py-1.5 max-sm:min-h-[44px] rounded-md text-xs font-semibold transition-colors ${tab === 'series' ? 'bg-accent text-white' : 'text-text-muted hover:text-text-heading'}`}
             onClick={() => setTab('series')}
           >
             <Tv size={13} className="inline mr-1.5" />{t.library.seriesTab} <span className="opacity-70">{data?.series.length ?? 0}</span>
           </button>
           <button
-            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${tab === 'movies' ? 'bg-accent text-white' : 'text-text-muted hover:text-text-heading'}`}
+            className={`px-3 py-1.5 max-sm:min-h-[44px] rounded-md text-xs font-semibold transition-colors ${tab === 'movies' ? 'bg-accent text-white' : 'text-text-muted hover:text-text-heading'}`}
             onClick={() => setTab('movies')}
           >
             <Film size={13} className="inline mr-1.5" />{t.library.moviesTab} <span className="opacity-70">{data?.movies.length ?? 0}</span>
@@ -223,10 +223,10 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
                       {t.library.inWatchlist}
                     </span>
                   )}
-                  {/* Hover action: borrar */}
-                  <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  {/* Acción: borrar (visible siempre en táctil) */}
+                  <div className="actions-overlay absolute inset-0 bg-black/45 flex items-center justify-center">
                     <button
-                      className="w-10 h-10 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
+                      className="w-[44px] h-[44px] shrink-0 sm:w-10 sm:h-10 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
                       title={t.library.deleteMovie}
                       onClick={() => askDelete({ type: 'movie', dir: m.dir, title: m.title, label: `${m.title} (${m.year || '—'})`, sizeBytes: m.sizeBytes, files: m.videos, inWatchlist: m.inWatchlist })}
                     >
@@ -265,7 +265,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
                       </div>
                     </button>
                     <button
-                      className="w-7 h-7 rounded-full border border-border text-text-muted flex items-center justify-center hover:bg-danger hover:text-white hover:border-danger transition-colors shrink-0"
+                      className="w-9 h-9 sm:w-7 sm:h-7 rounded-full border border-border text-text-muted flex items-center justify-center hover:bg-danger hover:text-white hover:border-danger transition-colors shrink-0"
                       title={t.library.deleteSeries}
                       onClick={() => askDelete({ type: 'series', dir: s.dir, title: s.title, label: `${s.title} (${t.library.fullSeries})`, sizeBytes: s.sizeBytes, files: s.seasons.reduce((a, x) => a + x.episodes.length + x.otherFiles, 0), inWatchlist: s.inWatchlist })}
                     >
@@ -326,7 +326,7 @@ export function LibraryView({ showToast }: { showToast: (msg: string, type?: 'su
       {/* Confirmación */}
       {pending && (
         <div className="modal-overlay" onClick={() => !deleting && setPending(null)}>
-          <div className="glass-panel w-full max-w-md rounded-2xl p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="glass-panel w-full max-w-md rounded-2xl p-5 sm:p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <h3 className="text-lg font-extrabold text-text-heading tracking-tight">{t.library.confirmTitle}</h3>
               <button className="text-text-muted hover:text-danger transition-colors" onClick={() => !deleting && setPending(null)}>

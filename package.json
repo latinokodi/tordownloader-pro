@@ -1,6 +1,6 @@
 {
-  "name": "tordownloader-pro",
-  "version": "1.0.21",
+  "name": "mediapilot",
+  "version": "1.0.22",
   "description": "TorDownloader PRO — Premium TorBox & Jackett Client",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -15,7 +15,9 @@
     "pyinstaller": "cd electron/qbit-plugins && pyinstaller --onefile --name qbit-runner --distpath . --add-data \"engines:engines\" --add-data \"novaprinter.py:.\" --add-data \"helpers.py:.\" --hidden-import cloudscraper --clean qbit-runner.py && rm -rf build qbit-runner.spec",
     "dist": "npm run pyinstaller && npm run build && electron-builder",
     "dist:dir": "npm run pyinstaller && npm run build && electron-builder --dir",
-    "spec": "esbuild spec/support/run.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --outfile=dist-electron/mp-spec.cjs && node dist-electron/mp-spec.cjs"
+    "spec": "esbuild spec/support/run.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --outfile=dist-electron/mp-spec.cjs && node dist-electron/mp-spec.cjs",
+    "fix:native": "npm rebuild better-sqlite3",
+    "rebuild:electron": "npx @electron/rebuild -f -w better-sqlite3"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.4",

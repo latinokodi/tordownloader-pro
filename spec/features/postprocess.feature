@@ -55,3 +55,15 @@ Feature: Lo que la app hace sola al terminar una descarga
       # con transferencia en marcha se espera 4x el límite (480 min) antes de liberar
       | downloading | 600   | se libera        |
       | downloading | 300   | no se libera     |
+
+  Scenario Outline: Nombre canónico del episodio para Jellyfin
+    Given la serie se llama "<serie>" y el episodio es de la temporada <temporada> número <episodio>
+    When calculo el nombre canónico con extensión "<ext>"
+    Then el nombre canónico es "<nombre>"
+
+    Examples:
+      | serie         | temporada | episodio | ext  | nombre                     |
+      | Humans (2015) | 2         | 1        | .mkv | Humans (2015) - S02E01.mkv |
+      | FBI (2018)    | 7         | 20       | .mkv | FBI (2018) - S07E20.mkv    |
+      | Demo          | 1         | 103      | mkv  | Demo - S01E103.mkv         |
+      | Demo/Serie    | 3         | 7        | .mp4 | DemoSerie - S03E07.mp4     |

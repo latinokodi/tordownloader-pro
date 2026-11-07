@@ -12,6 +12,9 @@ export interface AppSettings {
   language_profile?: string
   monitor_enabled?: boolean
   monitor_interval_minutes?: number
+  max_concurrent_downloads?: number
+  max_movie_size_gb?: number
+  max_series_size_gb?: number
   automation_service?: string
   automation_failover?: boolean
 }

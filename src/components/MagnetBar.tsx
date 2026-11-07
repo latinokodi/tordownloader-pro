@@ -21,11 +21,11 @@ export function MagnetBar({ value, onChange, onSubmit, adding, service, onServic
   const noServiceConfigured = !hasTorbox && !hasRealdebrid
 
   return (
-    <form className="magnet-bar px-6 py-3 bg-bg-deep border-b border-border flex gap-3 items-center" onSubmit={(e) => { e.preventDefault(); onSubmit() }}>
+    <form className="magnet-bar px-3 sm:px-6 py-3 bg-bg-deep border-b border-border flex flex-wrap gap-3 items-center" onSubmit={(e) => { e.preventDefault(); onSubmit() }}>
       <Magnet size={18} className="text-accent shrink-0" />
       <input
         type="text"
-        className="input-field flex-1 text-sm font-mono"
+        className="input-field flex-1 min-w-0 text-sm font-mono"
         placeholder={t.magnetBar.placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}

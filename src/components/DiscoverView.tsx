@@ -374,7 +374,7 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
         </button>
 
         {/* Detail header */}
-        <div className="glass-panel p-4 flex gap-4">
+        <div className="glass-panel p-4 flex flex-col sm:flex-row gap-4">
           {items.poster && (
             <img src={items.poster} alt={items.title} className="w-24 h-36 object-cover" />
           )}
@@ -426,8 +426,8 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
   return (
     <div className="space-y-6">
       {/* Search field + Catalog selector */}
-      <form className="flex gap-3" onSubmit={handleTMDSearch}>
-        <div className="flex-1 relative">
+      <form className="flex flex-col sm:flex-row gap-3" onSubmit={handleTMDSearch}>
+        <div className="flex-1 min-w-0 relative">
           <input
             type="text"
             className="input-field w-full"
@@ -458,10 +458,10 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
 
       {/* Catalog selector */}
       {catalogs && catalogs.length > 0 && (
-        <div className="flex gap-2 items-center">
+        <div className="flex flex-wrap gap-2 items-center">
           <span className="text-xs font-mono text-text-muted uppercase">Catálogos:</span>
           <select
-            className="btn border border-border text-xs px-3 py-1.5 bg-bg-deep font-mono text-text-main max-w-xs"
+            className="btn border border-border text-xs px-3 py-1.5 bg-bg-deep font-mono text-text-main w-full sm:w-auto sm:max-w-xs"
             value={selectedCatalog || ''}
             onChange={(e) => {
               const val = e.target.value
@@ -501,7 +501,7 @@ export function DiscoverView({ onDownloadAdded, showToast, service, hasTorbox, h
 
         <div className="flex-1" />
 
-        <div className="text-[11px] text-text-muted">{collections.length} colecciones</div>
+        <div className="text-[10px] sm:text-[11px] text-text-muted">{collections.length} colecciones</div>
       </div>
       )}
 

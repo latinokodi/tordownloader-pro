@@ -10,7 +10,14 @@ const TORBOX_CDN_DOMAINS = [
   'media.torbox.app',
   'tb-cdn.io',    // TorBox CDN edge nodes
   'tb-cdn.cx',    // TorBox CDN edge nodes (alt)
+  'tb-cdn.st',    // TorBox CDN edge nodes (alt)
 ];
+
+/** TorBox rota el TLD de sus nodos (…tb-cdn.io → …tb-cdn.cx → …tb-cdn.st), así que
+ *  una lista fija se queda vieja y el guardián rechaza descargas legítimas
+ *  (`store-029.weur.tb-cdn.st`) dejando la cola en failed. Los nodos siempre
+ *  terminan en el label `tb-cdn.<tld>`; se acepta ese patrón además de la lista. */
+const TORBOX_CDN_EDGE = /(^|\.)tb-cdn\.[a-z]{2,3}$/;
 
 /** Real-Debrid CDN domains — RD generates download URLs via /unrestrict/link.
  *  These URLs are always on RD's infrastructure.  Subdomains include
@@ -26,6 +33,7 @@ const ALL_CDN_DOMAINS = [...TORBOX_CDN_DOMAINS, ...REALDEBRID_CDN_DOMAINS];
 function isDebridCDN(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
+    if (TORBOX_CDN_EDGE.test(hostname)) return true;
     return ALL_CDN_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
   } catch {
     return false;

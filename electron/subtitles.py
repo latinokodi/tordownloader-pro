@@ -110,6 +110,59 @@ def fetch_subtitles(imdb_id, media_type, season=None, episode=None, lang=None):
     return subs
 
 
+# ── Desfase de los subtítulos descargados ──────────────────────────────────
+# Medido contra el audio real (Whisper con timestamps por palabra): los subs de
+# OpenSubtitles entran de media 179 ms ANTES de la voz, mientras que un subtítulo
+# incrustado profesional mide -58 ms (ese -58 es el suelo del propio método de
+# medida). Es decir: los nuestros van ~120 ms más adelantados de lo normal, y el
+# usuario lo percibe como "siempre salen ~200 ms antes".
+# Se compensa al guardar. Ajustable con SUBTITLE_OFFSET_MS (0 lo desactiva).
+SUBTITLE_OFFSET_MS = int(os.environ.get('SUBTITLE_OFFSET_MS', '150'))
+
+
+def _shift_stamp(stamp, offset_ms):
+    h, m, rest = stamp.split(':')
+    secs, ms = rest.split(',')
+    total = int(h) * 3600000 + int(m) * 60000 + int(secs) * 1000 + int(ms) + int(offset_ms)
+    total = max(0, total)
+    h, rem = divmod(total, 3600000)
+    m, rem = divmod(rem, 60000)
+    secs, ms = divmod(rem, 1000)
+    return f'{h:02d}:{m:02d}:{secs:02d},{ms:03d}'
+
+
+def shift_srt_text(text, offset_ms):
+    """Suma offset_ms a todos los timestamps de un SRT en texto."""
+    if not offset_ms:
+        return text
+
+    def repl(m):
+        return f'{_shift_stamp(m.group(1), offset_ms)} --> {_shift_stamp(m.group(2), offset_ms)}'
+
+    return re.sub(r'(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})', repl, text)
+
+
+def shift_srt_file(path, offset_ms, backup=True):
+    """Desplaza un .srt en disco (con copia .bak). Devuelve True si lo tocó."""
+    if not path.lower().endswith('.srt') or not offset_ms:
+        return False
+    try:
+        raw = open(path, 'rb').read()
+        texto = raw.decode('utf-8', errors='replace')
+        nuevo = shift_srt_text(texto, offset_ms)
+        if nuevo == texto:
+            return False
+        if backup:
+            with open(path + '.bak', 'wb') as f:
+                f.write(raw)
+        with open(path, 'wb') as f:
+            f.write(nuevo.encode('utf-8'))
+        return True
+    except Exception as e:
+        print(f'    ✗ no se pudo desplazar {os.path.basename(path)}: {e}', file=sys.stderr)
+        return False
+
+
 def download_subtitle(url, dest_path):
     """Descarga un sub con validaciones (tamaño, HTML). Devuelve True/False."""
     tmp = dest_path + '.part'
@@ -122,6 +175,12 @@ def download_subtitle(url, dest_path):
         head = data[:512].lstrip().lower()
         if head.startswith((b'<!doctype html', b'<html', b'<head', b'<body')):
             raise ValueError('respuesta HTML (no un subtítulo)')
+        if dest_path.lower().endswith('.srt') and SUBTITLE_OFFSET_MS:
+            try:
+                texto = data.decode('utf-8', errors='replace')
+                data = shift_srt_text(texto, SUBTITLE_OFFSET_MS).encode('utf-8')
+            except Exception:
+                pass  # si no se puede decodificar, se guarda tal cual
         with open(tmp, 'wb') as f:
             f.write(data)
         os.replace(tmp, dest_path)

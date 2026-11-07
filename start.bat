@@ -13,6 +13,13 @@ echo.
 if defined SOLO_COMPROBAR echo   Modo comprobacion: solo revisa las dependencias.
 echo.
 
+echo %CD% | find /i "OneDrive" >nul
+if not errorlevel 1 (
+  echo   [i] La carpeta del proyecto esta dentro de OneDrive. Si la app falla al
+  echo       abrir la base de datos, muevela a una ruta local como C:\MediaPilot.
+  echo.
+)
+
 :: ── 1/4 · Node.js ────────────────────────────────────────────────────────────
 echo   [1/4] Node.js
 call :hay node
@@ -86,6 +93,32 @@ if not exist "node_modules" (
 ) else (
   echo         dependencias: ya instaladas.
 )
+
+:: ── Comprobacion del modulo nativo ──────────────────────────────────────────
+rem better-sqlite3 se compila contra la ABI de la version de Node con la que se
+rem instalan las dependencias. Si el equipo usa otra (o los binarios llegan
+rem sincronizados desde otro equipo por OneDrive), la app arranca pero la base
+rem no abre y la pantalla se llena de "Error occurred in handler". Aqui se
+rem detecta antes de arrancar y se recompila solo.
+echo         comprobando la base de datos ^(better-sqlite3^)...
+node -e "require('better-sqlite3')" >nul 2>&1
+if not errorlevel 1 goto sqlite_ok
+echo         no carga con este Node; recompilando...
+call npm rebuild better-sqlite3 >nul 2>&1
+node -e "require('better-sqlite3')" >nul 2>&1
+if not errorlevel 1 goto sqlite_ok
+echo.
+echo   [!] La base de datos no se puede abrir en este equipo.
+echo       Prueba a mano:  npm rebuild better-sqlite3
+echo       Si sigue igual, borra la carpeta node_modules y vuelve a ejecutar
+echo       este archivo.
+echo.
+echo       Evita tener el proyecto dentro de OneDrive: sincroniza los binarios
+echo       de otro equipo y la base deja de cargar.
+echo.
+pause
+exit /b 1
+:sqlite_ok
 
 echo         arrancando el servidor web...
 echo         Abre http://127.0.0.1:9650 en tu navegador. Deja esta ventana abierta;

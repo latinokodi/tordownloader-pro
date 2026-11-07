@@ -37,6 +37,7 @@
 
 html, body, #root {
   height: 100%;
+  height: 100dvh; /* dvh: 100vh queda por debajo del chrome del navegador móvil */
   width: 100%;
   overflow: hidden;
   background: var(--bg-deep);
@@ -45,6 +46,13 @@ html, body, #root {
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+/* Nada de medios desbordando su contenedor */
+img, video {
+  max-width: 100%;
+  height: auto;
 }
 
 /* ─── Scrollbar (soft) ─── */
@@ -172,6 +180,23 @@ html, body, #root {
     box-shadow: var(--shadow-pop);
   }
 
+  /* ─── Acciones sobre póster (borrar / añadir / pausar) ───
+     En escritorio aparecen al pasar el ratón. En pantallas táctiles (pointer: coarse)
+     no existe hover, así que deben verse SIEMPRE o la acción es inalcanzable. */
+  .actions-overlay {
+    opacity: 1;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .actions-overlay {
+      opacity: 0;
+      transition: opacity 160ms ease;
+    }
+    .group:hover .actions-overlay,
+    .group:focus-within .actions-overlay {
+      opacity: 1;
+    }
+  }
+
   /* ─── Inputs ─── */
   .input-field {
     width: 100%;
@@ -291,4 +316,29 @@ html, body, #root {
 @keyframes glow-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.18); }
   50% { box-shadow: 0 0 0 6px rgba(79, 70, 229, 0.08); }
+}
+
+/* ─── Móvil (≤640px): objetivos táctiles y sin zoom de iOS ─── */
+/* OJO: la app fija html{font-size:15px} → 1rem = 15px, así que los tamaños
+   táctiles van en px reales (2.5rem serían 37.5px, por debajo de 44). */
+@media (max-width: 639px) {
+  .btn {
+    min-height: 44px;
+    /* Botones sólo-icono (34px de ancho por el padding) también alcanzan 44 */
+    min-width: 44px;
+  }
+  /* iOS Safari hace zoom al enfocar un input con font-size < 16px */
+  .input-field,
+  .select-field {
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .modal-panel {
+    padding: 1.25rem;
+    border-radius: var(--radius-md);
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
 }

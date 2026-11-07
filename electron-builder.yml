@@ -1,11 +1,11 @@
-appId: com.tordownloader.pro
-productName: TorDownloader PRO
-copyright: Copyright © 2025
+appId: com.mediapilot.app
+productName: MediaPilot
+copyright: Copyright © 2025-2026 latinokodi
 
 publish:
   provider: github
   owner: latinokodi
-  repo: tordownloader-pro
+  repo: MediaPilot
 
 directories:
   output: release

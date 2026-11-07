@@ -106,7 +106,7 @@ const DownloadCardComponent = function DownloadCard({ download: dl, onDelete, on
 
   return (
     <article className="glass-panel p-4 relative flex flex-col gap-3 group queue-item">
-      <div className="flex justify-between items-start pr-8">
+      <div className="flex justify-between items-start pr-10 sm:pr-8">
         <div className="flex-1 overflow-hidden">
           <h3 className="text-sm font-bold text-text-heading truncate" title={dl.name}>{dl.name}</h3>
           <div className="flex gap-4 text-xs font-mono text-text-muted mt-1">
@@ -153,7 +153,7 @@ const DownloadCardComponent = function DownloadCard({ download: dl, onDelete, on
         <div className="h-full bg-accent transition-all duration-300" style={{ width: `${progress}%` }} />
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-xs font-mono uppercase bg-bg-deep p-2 border border-border">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono uppercase bg-bg-deep p-2 border border-border">
         <div>
           <span className="text-text-muted block text-[10px]">{t.downloadCard.cloud}</span>
           <strong className="text-accent">{translateStatus(dl.status, t) || t.downloadCard.pending}</strong>

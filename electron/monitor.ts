@@ -226,6 +226,13 @@ async function attemptTarget(item: WatchlistItem, detail: any, target: DueTarget
     return 'grabbed'
   }
 
+  // Ya está en disco o en la cola (spec B26): ni fallo ni gasto de intento.
+  if (outcome.status === 'already_have') {
+    deleteAttempt(item.tmdb_id, item.media_type, season, episode)
+    log(`≡ ${label} ya está en la biblioteca o en la cola — no se vuelve a bajar (${outcome.error || 'sin detalle'})`)
+    return 'grabbed'
+  }
+
   // Debrid en cooldown (spec B10): NO es falta de fuente ni un fallo del
   // episodio. No se consume intento (sin backoff) y se avisa una vez por ventana:
   // martillear durante el cooldown lo ALARGA (medido: 03:59 → 08:03 UTC).

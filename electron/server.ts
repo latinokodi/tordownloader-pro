@@ -18,6 +18,7 @@ import { startWorker, cancelLocalDownload } from './worker'
 import { listWatchlist, getWatchlistItem, addWatchlistItem, updateWatchlistItem, removeWatchlistItem, grabHistoryForItem, recentGrabs, normalizeLanguageProfile, normalizeMediaType } from './watchlist'
 import { startMonitor, stopMonitor, kickMonitor, forceCheckItem, getMonitorStatus, getMonitorLastSummary, startUpgradeScan, getUpgradeScan, applyUpgrade, getCalendar, healLibraryFolders } from './monitor'
 import { reconcileDebrid } from './debrid-reconcile'
+import { releaseCoverage, episodesOnDisk, planDuplicateSkip, type ExistingCoverage } from './download-dedupe'
 import { getAccountStatus, isInCooldown } from './debrid-status'
 import { scanLibrary, deleteMovie, deleteSeries, deleteSeason, deleteEpisode, resolveTargetPath, fetchJellyfinPoster } from './library'
 import { TorboxAPI } from './torbox'
@@ -146,6 +147,42 @@ function ensureSearchEnv(tmdbKey: string) {
 
 // ── Handler implementations (ported from main.ts IPC) ─────
 
+/** Nombre del release a partir del magnet (`dn=`), que es lo único que trae. */
+function nameFromMagnet(magnet: string): string {
+  try {
+    const q = String(magnet || '').split('?')[1] || ''
+    const dn = new URLSearchParams(q).get('dn')
+    return dn ? decodeURIComponent(dn) : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Motivo por el que un release añadido a mano es redundante, o null.
+ * Compara por temporada/episodio contra la cola y contra el disco (spec B26).
+ */
+function duplicateReason(name: string, destFolder?: string): string | null {
+  try {
+    const cov = releaseCoverage(name)
+    if (!cov) return null
+    const existing: ExistingCoverage[] = []
+    for (const row of getDownloads()) {
+      const c = releaseCoverage(row.name)
+      if (c) existing.push({ ...c, source: 'download', status: row.local_status || row.status || '', name: row.name })
+    }
+    if (destFolder) {
+      for (const ref of episodesOnDisk(destFolder)) {
+        existing.push({ ...ref, pack: false, source: 'disco', status: 'downloaded', name: '' })
+      }
+    }
+    const plan = planDuplicateSkip(cov, existing)
+    return plan.skip ? plan.reason : null
+  } catch {
+    return null // ante la duda, se añade
+  }
+}
+
 async function addMagnetHandler(magnet: string, service: string, type: string, destFolder?: string) {
   const settings = getSettings()
   if (service === 'realdebrid') {
@@ -156,6 +193,12 @@ async function addMagnetHandler(magnet: string, service: string, type: string, d
       if (result.success && result.data) {
         const { id } = RealDebridAPI.torrentIdentity(result.data)
         if (id) {
+          const nombreRd = String((result.data as any).filename || (result.data as any).name || '') || nameFromMagnet(magnet)
+          const dup = duplicateReason(nombreRd, destFolder)
+          if (dup) {
+            try { await rd.deleteTorrent(id) } catch { /* el aviso importa más */ }
+            return { success: true, skipped: true, detail: `Duplicado: ${dup}` }
+          }
           const existing = getDownloadByTorboxId(id)
           if (existing) updateDownload(id, { local_status: 'pending', service: 'realdebrid', type: type as any })
           else addDownload({ torbox_id: id, name: result.data.filename || result.data.name || 'Pending...', status: 'waiting_files_selection', progress: 0, service: 'realdebrid', type: type as any })
@@ -174,6 +217,21 @@ async function addMagnetHandler(magnet: string, service: string, type: string, d
     if (result.success && result.data) {
       const { id } = TorboxAPI.torrentIdentity(result.data)
       if (id) {
+        // ¿Duplicado? (spec B26) El nombre que devuelve el debrid basta para ver
+        // si ese episodio ya está en disco/cola o si la temporada ya se está
+        // bajando en un pack. Si lo es, se quita del debrid y no se encola.
+        let nombre = String((result.data as any).name || '') || nameFromMagnet(magnet)
+        if (!nombre) {
+          try {
+            const info = await tb.getTorrentInfo(id)
+            nombre = String((info?.data as any)?.name || (info?.data as any)?.torrent?.name || '')
+          } catch { /* sin nombre no hay deduplicación: se añade */ }
+        }
+        const dup = duplicateReason(nombre, destFolder)
+        if (dup) {
+          try { await tb.controlTorrent(id, 'delete') } catch { /* el aviso importa más */ }
+          return { success: true, skipped: true, detail: `Duplicado: ${dup}` }
+        }
         const existing = getDownloadByTorboxId(id)
         if (existing) updateDownload(id, { local_status: 'pending', service: 'torbox', type: type as any, ...(destFolder ? { dest_folder: destFolder } : {}) })
         else addDownload({ torbox_id: id, name: result.data.name || 'Pending...', status: 'pending', progress: 0, local_status: 'pending', service: 'torbox', type: type as any, ...(destFolder ? { dest_folder: destFolder } : {}) })

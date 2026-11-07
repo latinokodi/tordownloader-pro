@@ -4,10 +4,10 @@
 // the winner to the debrid service and snapshot the exact destination folder
 // on the download row so the worker routes it without re-parsing.
 import path from 'path'
-import { getSettings, addDownload, getDownloadByTorboxId, updateDownload, deleteDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, addBadRelease, type Settings, type DebridService, type LanguageProfile } from './db'
+import { getSettings, getDownloads, addDownload, getDownloadByTorboxId, updateDownload, deleteDownload, getBadReleaseHashes, getBadReleaseTitles, normalizeReleaseTitle, addBadRelease, type Settings, type DebridService, type LanguageProfile } from './db'
 import { recordGrab } from './watchlist'
 import { runPythonLines, setupSearchEnv } from './python-run'
-import { computeDestination, safeSegment, seriesNameMatches, releaseYear, getAltTitlesCached } from './media-layout'
+import { computeDestination, safeSegment, seriesNameMatches, releaseYear, getAltTitlesCached, searchTitleCandidates } from './media-layout'
 import { TorboxAPI } from './torbox'
 import { RealDebridAPI } from './realdebrid'
 import { eventBus } from './event-bus'
@@ -15,6 +15,7 @@ import { tmdbDetail } from './tmdb'
 import { isVideoName, probeAddedTorrent, type RemoteFile } from './preflight'
 import { getAccountStatus, isInCooldown, cooldownFilter, cooldownLabel } from './debrid-status'
 import { meetsMinQuality, parseQualitySetting, qualityLabel } from './quality'
+import { releaseCoverage, episodesOnDisk, planDuplicateSkip, type ExistingCoverage } from './download-dedupe'
 
 export type GrabLanguage = 'latino' | 'english'
 
@@ -66,7 +67,7 @@ export interface GrabResultItem {
 
 export interface GrabOutcome {
   ok: boolean
-  status: 'grabbed' | 'no_source' | 'error' | 'cooldown'
+  status: 'grabbed' | 'no_source' | 'error' | 'cooldown' | 'already_have'
   language?: 'latino' | 'english'
   source?: string
   service?: DebridService
@@ -135,6 +136,16 @@ function hasSeasonPackToken(title: string): boolean {
 }
 
 /** Score a candidate for a specific target. Higher wins; drop below -500. */
+/**
+ * Releases de cámara (grabados en sala y volcados a telecine/tele-sync). Nunca
+ * se eligen solos: un TS de un estreno recién salido tiene seeds de sobra y
+ * 1080p, así que sumaba puntuación suficiente para pasar el corte de -500 y
+ * acababa en la biblioteca. El añadido a mano lo decide el usuario.
+ */
+export function isCamRelease(title: string): boolean {
+  return /(camrip|\bcam\b|telesync|\bts\b|hdcam|screener|telecine)/i.test(title || '')
+}
+
 function scoreResult(r: GrabResultItem, target: GrabTarget): number {
   const t = (r.title || '').trim()
   if (!t) return -1000
@@ -184,7 +195,7 @@ function scoreResult(r: GrabResultItem, target: GrabTarget): number {
       if (yearMatch[0] === target.year) score += 40
       else score -= 120
     }
-    if (/(camrip|cam\b|telesync|ts\b|hdcam|screener|telecine)/i.test(lower)) score -= 400
+    if (isCamRelease(lower)) return -999
     if (/(1080p|1080)/i.test(lower)) score += 60
     else if (/(2160p|4k\b|uhd)/i.test(lower)) score += 80
     else if (/(720p)/i.test(lower)) score += 30
@@ -441,7 +452,9 @@ async function searchLatino(
 
 /** English fallback via Jackett (meta-search.py --jackett-only). */
 async function searchEnglish(target: GrabTarget): Promise<GrabResultItem[]> {
-  const base = (target.original_title || target.title || '').trim()
+  // Primero el título en alfabeto latino: con un original CJK (anime) los
+  // releases usan el nombre traducido y buscar por el original no encontraba nada.
+  const base = searchTitleCandidates(target)[0] || (target.original_title || target.title || '').trim()
   if (!base) return []
   let query = base
   if (target.kind === 'movie') {
@@ -640,6 +653,30 @@ export async function grab(target: GrabTarget): Promise<GrabOutcome> {
     base.error = 'Destination folder not configured (set movies/series folders in Settings)'
     return base
   }
+  // ¿Ya lo tenemos? (spec B26) Un episodio que ya está en disco o en la cola no
+  // se vuelve a bajar: era el doble gasto de encolar el pack de temporada y los
+  // episodios sueltos (Silo S02 → 30 GB de más, dos copias por capítulo).
+  // Los `upgrade` quedan fuera: ahí repetir la descarga ES el objetivo.
+  if (target.mode !== 'upgrade' && target.kind === 'episode' && target.season && target.episode) {
+    try {
+      const existing: ExistingCoverage[] = []
+      for (const row of getDownloads()) {
+        const cov = releaseCoverage(row.name)
+        if (cov) existing.push({ ...cov, source: 'download', status: row.local_status || row.status || '', name: row.name })
+      }
+      for (const ref of episodesOnDisk(destFolder)) {
+        existing.push({ ...ref, pack: false, source: 'disco', status: 'downloaded', name: '' })
+      }
+      const dup = planDuplicateSkip({ season: target.season, episode: target.episode, pack: false }, existing)
+      if (dup.skip) {
+        console.log(`[grab] se omite ${target.title} S${pad2(target.season)}E${pad2(target.episode)}: ${dup.reason}`)
+        return { ...base, ok: true, status: 'already_have', error: dup.reason }
+      }
+    } catch (e: any) {
+      console.warn(`[grab] la comprobación de duplicados falló (se sigue con el grab): ${e?.message || e}`)
+    }
+  }
+
   // Topes de tamaño por tipo: 0 = sin límite. Solo aplican a grabs automáticos.
   const capGb = target.kind === 'movie' ? settings.max_movie_size_gb : settings.max_series_size_gb
   const maxBytes = capGb > 0 ? capGb * 1024 ** 3 : null

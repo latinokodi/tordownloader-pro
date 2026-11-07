@@ -16,6 +16,7 @@ interface SettingsSchema {
   language_profile?: string
   monitor_enabled?: boolean
   monitor_interval_minutes?: number
+  max_concurrent_downloads?: number
   automation_service?: string
   automation_failover?: boolean
   max_movie_size_gb?: number
@@ -282,14 +283,14 @@ export function SettingsModal({ onClose, showToast }: Props) {
   if (loading) return null
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in" onClick={onClose}>
-      <div className="glass-panel w-full max-w-2xl bg-bg-panel border border-border shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="p-6 border-b border-border flex justify-between items-center bg-bg-deep">
-          <h2 className="text-xl font-black uppercase tracking-widest text-text-heading font-display">{t.settings.title}</h2>
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-0 sm:p-6 animate-fade-in" onClick={onClose}>
+      <div className="glass-panel w-full max-w-2xl bg-bg-panel border border-border shadow-2xl flex flex-col h-full sm:h-auto max-h-[100dvh] sm:max-h-[92vh] rounded-none sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="p-4 sm:p-6 border-b border-border flex justify-between items-center bg-bg-deep">
+          <h2 className="text-lg sm:text-xl font-black uppercase tracking-widest text-text-heading font-display">{t.settings.title}</h2>
           <button className="text-text-muted hover:text-danger font-bold text-xl" onClick={onClose}>✕</button>
         </div>
 
-        <form onSubmit={handleSave} className="p-6 flex flex-col gap-8 overflow-y-auto max-h-[70vh]">
+        <form onSubmit={handleSave} className="p-4 sm:p-6 flex flex-col gap-6 sm:gap-8 overflow-y-auto flex-1 min-h-0 sm:max-h-[70vh]">
           {/* Search — built-in */}
           <div className="space-y-4">
             <h3 className="text-accent font-mono text-sm uppercase tracking-widest border-b border-border pb-2">{t.settings.searchEngines}</h3>
@@ -512,6 +513,19 @@ export function SettingsModal({ onClose, showToast }: Props) {
                     value={settings?.monitor_interval_minutes ?? 30}
                     onChange={(e) => setSettings((s) => s ? { ...s, monitor_interval_minutes: Math.max(5, Number(e.target.value) || 30) } : null)}
                   />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.maxConcurrentLabel}</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    step={1}
+                    className="input-field w-full"
+                    value={settings?.max_concurrent_downloads ?? 3}
+                    onChange={(e) => setSettings((s) => s ? { ...s, max_concurrent_downloads: Math.min(10, Math.max(1, Number(e.target.value) || 3)) } : null)}
+                  />
+                  <p className="text-xs text-text-muted mt-1">{t.settings.maxConcurrentHint}</p>
                 </div>
                 <div className="flex-1">
                   <label className="block text-xs font-mono text-text-muted mb-2 uppercase">{t.settings.serviceLabel}</label>

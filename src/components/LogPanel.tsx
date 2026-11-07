@@ -97,7 +97,7 @@ export function LogPanel() {
 
   const FilterBtn = ({ f, label, n }: { f: LevelFilter; label: string; n: number }) => (
     <button
-      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+      className={`px-2.5 py-1 max-sm:min-h-[44px] rounded-md text-[11px] font-semibold transition-colors ${
         filter === f ? 'bg-accent text-white' : 'text-text-muted hover:bg-bg-input hover:text-text-heading'
       }`}
       onClick={() => setFilter(f)}
@@ -112,7 +112,7 @@ export function LogPanel() {
       <div className="flex flex-wrap items-center gap-2 pb-2 border-b border-border/50 px-1">
         <h3 className="text-sm font-bold text-text-muted uppercase tracking-wider mr-1">{t.logs.title}</h3>
         <input
-          className="input-field w-48 py-1 text-xs"
+          className="input-field w-full sm:w-48 py-1 text-xs"
           placeholder={t.logs.search}
           value={query}
           onChange={(e) => setQuery(e.target.value)}

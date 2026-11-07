@@ -213,6 +213,22 @@ def cmd_alt_titles(tmdb_id, media_type):
         if title and title not in seen and (not iso or iso in ('ES', 'MX', 'US', 'AR', 'CO', 'CL', 'PE')):
             seen.add(title)
             titles.append(title)
+    # Los releases usan el nombre TRADUCIDO cuando el título original no está en
+    # alfabeto latino (anime: テムパル～アイテムの力～ → "Overgeared"). Ese nombre
+    # vive en /translations, no en /alternative_titles, así que sin esto el
+    # matcher rechazaba todos los releases de la serie.
+    try:
+        tr = tmdb_get(f'/{kind}/{tmdb_id}/translations', {})
+        for item in tr.get('translations') or []:
+            if (item.get('iso_639_1') or '') not in ('en', 'es', 'es-MX', 'ja', 'ko', 'zh'):
+                continue
+            data = item.get('data') or {}
+            name = (data.get('name') or data.get('title') or '').strip()
+            if name and name not in seen:
+                seen.add(name)
+                titles.append(name)
+    except TMDBError:
+        pass
     return titles
 
 

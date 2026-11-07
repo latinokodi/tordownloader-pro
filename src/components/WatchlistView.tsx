@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookMarked, Plus, Play, Pause, RefreshCw, Trash2, MonitorCheck, Search, X } from 'lucide-react'
+import { BookMarked, Plus, Play, Pause, RefreshCw, Trash2, MonitorCheck, Search, X, KeyRound } from 'lucide-react'
 import { useT } from '../i18n'
 import { http } from '../hooks/http'
 
@@ -71,6 +71,9 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
   const [q, setQ] = useState('')
   const [searching, setSearching] = useState(false)
   const [hits, setHits] = useState<TmdbHit[]>([])
+  // B22: sin clave de TMDB la búsqueda no puede dar nada; se avisa antes
+  // de que el usuario escriba y se pregunte por qué no encuentra nada.
+  const [needKey, setNeedKey] = useState(false)
   const [pendingProfile, setPendingProfile] = useState('latino_first')
   const [pendingScope, setPendingScope] = useState<'new' | 'last_episode' | 'last_season' | 'first_season' | 'all'>('new')
 
@@ -90,11 +93,21 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
 
   const monitoredCount = useMemo(() => items.filter((i) => i.monitored).length, [items])
 
-  const openAdd = useCallback(() => {
+  const openAdd = useCallback(async () => {
     setQ('')
     setHits([])
     setSearching(false)
     setShowAdd(true)
+    // B19: el desplegable arranca con el idioma por defecto de Ajustes, no con
+    // "Latino primero" fijo. Antes, elegir "Solo latino" como predeterminado y
+    // añadir desde aquí guardaba latino_first y la lista lo mostraba así.
+    try {
+      const st = await http<any>('/api/settings')
+      // /api/settings devuelve el objeto plano (sin envoltorio success/data).
+      const p = st?.language_profile ?? st?.data?.language_profile
+      if (p === 'latino_first' || p === 'latino_only' || p === 'english_first') setPendingProfile(p)
+      setNeedKey(!(st?.tmdb_api_key ?? st?.data?.tmdb_api_key))
+    } catch { /* el ajuste es cosmético: el backend aplica el suyo */ }
   }, [])
 
   // Cerrar el modal de añadir con Escape
@@ -127,7 +140,13 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
         setHits(list)
         if (list.length === 0) showToast(t.watchlist.noResults, 'error')
       } else {
-        showToast(res?.error || t.watchlist.noResults, 'error')
+        const motivo = String(res?.error || '')
+        if (/api key/i.test(motivo)) {
+          setNeedKey(true)
+          showToast(t.watchlist.needKey, 'error')
+        } else {
+          showToast(motivo || t.watchlist.searchFailed, 'error')
+        }
       }
     } catch (e: any) {
       showToast(e?.message || t.watchlist.noResults, 'error')
@@ -315,7 +334,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
     <div className="h-full flex flex-col space-y-6 animate-fade-in">
       {/* Automation status bar */}
       <div className="glass-panel p-4 flex flex-wrap items-center gap-x-6 gap-y-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 w-full sm:w-auto">
           <MonitorCheck size={18} className={monitor?.enabled ? 'text-accent' : 'text-text-muted'} />
           <span className="font-mono text-sm uppercase tracking-wider">
             {monitor?.enabled ? t.watchlist.statusEnabled : t.watchlist.statusDisabled}
@@ -333,12 +352,12 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
           {t.watchlist.lastRun}: {monitor?.lastRun ? new Date(monitor.lastRun).toLocaleTimeString() : t.watchlist.never}
           {monitor?.running ? ` — ${t.watchlist.checking}` : ''}
         </div>
-        <div className="ml-auto flex gap-2">
-          <button className="btn border border-border text-xs px-3 hover:border-accent hover:text-accent" onClick={runAll} disabled={busy}>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto sm:ml-auto">
+          <button className="btn border border-border text-xs px-3 w-full sm:w-auto hover:border-accent hover:text-accent" onClick={runAll} disabled={busy}>
             <RefreshCw size={13} className={`inline mr-1 ${busy ? 'animate-spin' : ''}`} />
             {t.watchlist.checkAll}
           </button>
-          <button className="btn btn-accent px-4" onClick={openAdd}>
+          <button className="btn btn-accent px-4 w-full sm:w-auto" onClick={openAdd}>
             <Plus size={15} className="inline mr-1" />
             {t.watchlist.add}
           </button>
@@ -353,7 +372,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
             if (e.target === e.currentTarget) setShowAdd(false)
           }}
         >
-          <div className="w-full max-w-4xl h-[min(88vh,46rem)] overflow-hidden rounded-2xl bg-bg-panel border border-border shadow-2xl flex flex-col">
+          <div className="w-full max-w-4xl h-[100dvh] sm:h-[min(88vh,46rem)] overflow-hidden rounded-none sm:rounded-2xl bg-bg-panel border border-border shadow-2xl flex flex-col">
             {/* Header */}
             <div className="px-5 py-3.5 border-b border-border flex items-center justify-between shrink-0">
               <h2 className="font-extrabold text-text-heading flex items-center gap-2">
@@ -369,17 +388,17 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
             </div>
 
             {/* Search + options (fijos) */}
-            <div className="px-5 pt-4 pb-3 space-y-3 border-b border-border shrink-0">
-              <div className="flex gap-3">
+            <div className="px-4 sm:px-5 pt-4 pb-3 space-y-3 border-b border-border shrink-0">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <input
-                  className="input-field flex-1"
+                  className="input-field flex-1 min-w-0"
                   placeholder={t.watchlist.searchPlaceholder}
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && doSearch()}
                   autoFocus
                 />
-                <button className="btn btn-accent px-4" onClick={doSearch} disabled={searching || !q.trim()}>
+                <button className="btn btn-accent px-4" onClick={doSearch} disabled={searching || !q.trim() || needKey}>
                   <Search size={14} className="inline mr-1" />
                   {searching ? t.watchlist.searching : t.watchlist.searchBtn}
                 </button>
@@ -387,7 +406,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
               <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-xs">
                 <div className="flex items-center gap-3">
                   <span className="text-text-muted uppercase tracking-wider">{t.watchlist.profile}</span>
-                  <select className="input-field w-auto py-1 text-xs" value={pendingProfile} onChange={(e) => setPendingProfile(e.target.value)}>
+                  <select className="input-field w-auto min-w-0 max-w-full py-1 text-xs" value={pendingProfile} onChange={(e) => setPendingProfile(e.target.value)}>
                     {PROFILE_ORDER.map((p) => (
                       <option key={p} value={p}>{profileLabel(p)}</option>
                     ))}
@@ -395,7 +414,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-text-muted uppercase tracking-wider">{t.watchlist.scope}</span>
-                  <select className="input-field w-auto py-1 text-xs" value={pendingScope} onChange={(e) => setPendingScope(e.target.value as any)} title={t.watchlist.scope}>
+                  <select className="input-field w-auto min-w-0 max-w-full py-1 text-xs" value={pendingScope} onChange={(e) => setPendingScope(e.target.value as any)} title={t.watchlist.scope}>
                     {SCOPE_ORDER.map((s) => (
                       <option key={s} value={s}>{scopeLabel(s)}</option>
                     ))}
@@ -406,8 +425,15 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
             </div>
 
             {/* Results (scroll interno del modal únicamente) */}
-            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-              {hits.length === 0 && !searching && (
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 py-4">
+              {needKey && (
+                <div className="h-full flex flex-col items-center justify-center gap-3 py-10 text-center">
+                  <KeyRound size={30} strokeWidth={1.3} className="text-accent" />
+                  <p className="text-sm font-semibold text-text-heading">{t.watchlist.needKey}</p>
+                  <p className="text-sm text-text-muted max-w-md px-6">{t.watchlist.needKeyHint}</p>
+                </div>
+              )}
+              {!needKey && hits.length === 0 && !searching && (
                 <div className="h-full flex flex-col items-center justify-center gap-2 text-text-muted py-10">
                   <BookMarked size={30} strokeWidth={1.3} />
                   <p className="text-sm text-center px-6">{t.watchlist.noResultsHint}</p>
@@ -426,9 +452,9 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                         <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-bg-deep/85 text-text-main backdrop-blur-sm">
                           {hit.media_type === 'movie' ? t.watchlist.movie : t.watchlist.series}
                         </span>
-                        {/* Acción rápida sobre el póster */}
+                        {/* Acción rápida sobre el póster (visible siempre en táctil) */}
                         <button
-                          className="absolute left-2 right-2 bottom-2 opacity-0 group-hover:opacity-100 transition-opacity btn btn-accent text-xs px-2 py-1.5"
+                          className="actions-overlay absolute left-2 right-2 bottom-2 btn btn-accent text-xs px-2 py-1.5"
                           onClick={() => addItem(hit)}
                           disabled={busy}
                         >
@@ -482,17 +508,17 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                   className={`absolute top-2.5 right-2.5 w-2.5 h-2.5 rounded-full border border-white/80 ${item.monitored ? 'bg-success' : 'bg-text-muted'}`}
                   title={item.monitored ? t.watchlist.monitoring : t.watchlist.paused}
                 />
-                {/* Hover actions */}
-                <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2.5">
+                {/* Acciones sobre el póster (visibles siempre en táctil) */}
+                <div className="actions-overlay absolute inset-0 bg-black/45 flex items-center justify-center gap-1.5 sm:gap-2.5">
                   <button
-                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors"
+                    className="w-[44px] h-[44px] shrink-0 sm:w-9 sm:h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors"
                     title={item.monitored ? t.watchlist.pause : t.watchlist.resume}
                     onClick={() => toggleMonitored(item)}
                   >
                     {item.monitored ? <Pause size={15} /> : <Play size={15} />}
                   </button>
                   <button
-                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors disabled:opacity-60"
+                    className="w-[44px] h-[44px] shrink-0 sm:w-9 sm:h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-accent hover:text-white transition-colors disabled:opacity-60"
                     title={t.watchlist.checkNow}
                     onClick={() => checkItem(item.id)}
                     disabled={checkingId === item.id}
@@ -500,7 +526,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                     <RefreshCw size={15} className={checkingId === item.id ? 'animate-spin' : ''} />
                   </button>
                   <button
-                    className="w-9 h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
+                    className="w-[44px] h-[44px] shrink-0 sm:w-9 sm:h-9 rounded-full bg-white text-slate-800 flex items-center justify-center shadow hover:bg-danger hover:text-white transition-colors"
                     title={t.watchlist.remove}
                     onClick={() => removeItem(item)}
                   >
@@ -527,9 +553,9 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                     <span className="truncate">{lastGrabText(item.lastGrab)}</span>
                   </div>
                 )}
-                <div className="flex flex-col gap-1 mt-auto">
+                <div className="flex flex-col gap-1 mt-auto min-w-0">
                   <select
-                    className="input-field w-full py-1 text-[11px]"
+                    className="input-field w-full min-w-0 py-1 text-[11px]"
                     value={item.language_profile}
                     onChange={(e) => setProfile(item, e.target.value)}
                     title={t.watchlist.profile}
@@ -540,7 +566,7 @@ export function WatchlistView({ showToast, onActivity }: { showToast: (msg: stri
                   </select>
                   {item.media_type === 'series' && (
                     <select
-                      className="input-field w-full py-1 text-[11px]"
+                      className="input-field w-full min-w-0 py-1 text-[11px]"
                       value={item.backfill || 'new'}
                       onChange={(e) => setBackfill(item, e.target.value)}
                       title={t.watchlist.scope}
