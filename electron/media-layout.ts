@@ -154,6 +154,21 @@ function normalizeName(value: string): string {
 }
 
 /** Año de 4 dígitos entre paréntesis (o suelto) de un nombre de carpeta. */
+/**
+ * Nombre normalizado SOLO si es informativo. `normalizeName` se queda con
+ * [a-z0-9], así que un título CJK (japonés/coreano/chino) colapsa a "" o al año
+ * suelto: "テムパル～アイテムの力～ (2026)" y "보물섬 (2026)" daban ambos "2026" y
+ * se tomaban por la misma serie, mandando los episodios a la carpeta del anime.
+ * En ese caso se devuelve "" y la comparación normalizada se descarta (quedan
+ * igualdad exacta y comparación por tokens, que sí exigen contenido).
+ */
+function meaningfulName(value: string): string {
+  const n = normalizeName(value)
+  if (!n) return ''
+  if (/^(19|20)\d{2}$/.test(n)) return ''
+  return n
+}
+
 function yearOfFolderName(value: string): number {
   const m = String(value || '').match(/\b(19|20)\d{2}\b/)
   return m ? parseInt(m[0], 10) : 0
@@ -246,7 +261,8 @@ function folderMatchLevel(dirName: string, candidates: string[], year?: number):
     const withYear = year && !yearOfFolderName(cand) ? `${cand} (${year})` : cand
     if (dirName.toLowerCase() === cand.toLowerCase()) { best = Math.max(best, 2); continue }
     if (year && dirName.toLowerCase() === safeSegment(`${cand} (${year})`).toLowerCase()) { best = Math.max(best, 2); continue }
-    if (normalizeName(dirName) === normalizeName(withYear) || normalizeName(dirName) === normalizeName(cand)) { best = Math.max(best, 2); continue }
+    const nDir = meaningfulName(dirName)
+    if (nDir && (nDir === meaningfulName(withYear) || nDir === meaningfulName(cand))) { best = Math.max(best, 2); continue }
     if (!sameShowFolderName(dirName, withYear)) continue
     // Subconjunto ("Lioness" ⊂ "Operativo Lioness"): solo vale con años.
     const small = Math.min(new Set(looseTokens(dirName)).size, new Set(looseTokens(withYear)).size)
@@ -269,7 +285,8 @@ function folderExactness(dirName: string, candidates: string[], year?: number): 
     const withYear = year && !yearOfFolderName(cand) ? `${cand} (${year})` : cand
     if (year && dirName.toLowerCase() === safeSegment(`${cand} (${year})`).toLowerCase()) best = Math.max(best, 100)
     if (dirName.toLowerCase() === cand.toLowerCase()) best = Math.max(best, 95)
-    if (normalizeName(dirName) === normalizeName(withYear) || normalizeName(dirName) === normalizeName(cand)) best = Math.max(best, 90)
+    const nDirX = meaningfulName(dirName)
+    if (nDirX && (nDirX === meaningfulName(withYear) || nDirX === meaningfulName(cand))) best = Math.max(best, 90)
     if (sameShowFolderName(dirName, withYear)) best = Math.max(best, 70)
   }
   return best
@@ -470,10 +487,46 @@ function normTokens(value: string): string[] {
     .filter((t) => t.length > 0 && !NAME_STOPWORDS.has(t))
 }
 
+/** Igual que normTokens pero CONSERVANDO los artículos (para distinguir "The Dark" de "Dark"). */
+function rawTokens(value: string): string[] {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0)
+}
+
 /**
  * Parte "serie" de un nombre de release: lo anterior a SxxEyy, al año o a la
  * primera etiqueta de calidad, sin corchetes de tracker ni paréntesis.
  */
+const tieneLatino = (s: string): boolean => /[A-Za-z]/.test(String(s || ''))
+
+/**
+ * Títulos con los que BUSCAR un release, en orden: primero los que están en
+ * alfabeto latino. Con un original CJK (anime japonés, dramas coreanos) el
+ * nombre que usan los releases es el traducido ("Overgeared" para
+ * テムパル～アイテムの力～), y buscar por el original devolvía 130 resultados que
+ * el matcher rechazaba después: el episodio no se bajaba nunca.
+ */
+export function searchTitleCandidates(target: {
+  title?: string
+  original_title?: string
+  alt_titles?: string[]
+}): string[] {
+  const todos = [target.title, target.original_title, ...(target.alt_titles || [])]
+    .map((t) => String(t || '').trim())
+    .filter(Boolean)
+  // El más corto suele ser el nombre base ("Overgeared" antes que "Overgeared:
+  // The Power of Items") y una consulta corta devuelve igual los releases buenos.
+  const latinos = todos.filter(tieneLatino).sort((a, b) => a.length - b.length)
+  const resto = todos.filter((t) => !tieneLatino(t))
+  const out: string[] = []
+  for (const t of [...latinos, ...resto]) if (!out.includes(t)) out.push(t)
+  return out
+}
+
 export function releaseSeriesName(name: string): string {
   let s = String(name || '').replace(/\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i, '')
   s = s.replace(/\[[^\]]*\]/g, ' ').replace(/\([^)]*\)/g, ' ')
@@ -503,12 +556,16 @@ export function seriesNameMatches(
   candidates: Array<string | undefined | null>,
   altTitles: string[] = [],
 ): boolean {
-  const series = normTokens(releaseSeriesName(releaseName))
+  const titlePart = releaseSeriesName(releaseName)
+  const series = normTokens(titlePart)
   if (series.length === 0) return true
+  // Los artículos se descartan al normalizar, y eso hacía que "The Dark" pasara
+  // como "Dark" (serie homónima, 44 min vs 52): se comparan aparte.
+  const rawSeries = rawTokens(titlePart)
   const cands = [...candidates, ...altTitles]
     .filter((c): c is string => Boolean(c && String(c).trim()))
-    .map((c) => normTokens(String(c)))
-    .filter((t) => t.length > 0)
+    .map((c) => ({ tokens: normTokens(String(c)), raw: rawTokens(String(c)) }))
+    .filter((c) => c.tokens.length > 0)
   if (cands.length === 0) return true
 
   const flat = (tokens: string[]): string => tokens.join('')
@@ -518,9 +575,20 @@ export function seriesNameMatches(
     const offset = tokens.length - series.length
     return series.every((t, i) => tokens[offset + i] === t)
   }
+  /**
+   * El release puede OMITIR el artículo que el título sí lleva ("Office" para
+   * "The Office"), pero no AÑADIR uno que el título no tiene: "The Dark" no es
+   * "Dark". Sin este guardián, normTokens dejaba los dos con los mismos tokens.
+   */
+  const articleCompatible = (rawCand: string[]): boolean => {
+    const candArticle = rawCand[0] && LEADING_ARTICLES.has(rawCand[0]) ? rawCand[0] : ''
+    const relArticle = rawSeries[0] && LEADING_ARTICLES.has(rawSeries[0]) ? rawSeries[0] : ''
+    return !relArticle || relArticle === candArticle
+  }
 
   const seriesFlat = flat(series)
-  for (const tokens of cands) {
+  for (const { tokens, raw } of cands) {
+    if (!articleCompatible(raw)) continue
     if (flat(tokens) === seriesFlat) return true
     if (isTailOfTitle(tokens)) return true
   }
