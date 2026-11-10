@@ -136,11 +136,15 @@ function App() {
     setQuery('')
 
     try {
-      const res = await api<any>('/search', 'POST', { query: currentQuery })
+      const res = await api<any>('/search', 'POST', { query: currentQuery, tabId })
+      if (res && res.success === false) {
+        setTabError(tabId, res.error || t.toasts.searchFailed)
+        return
+      }
       const store = useSearchTabsStore.getState()
       const tab = store.tabs[tabId]
       if (tab && (!tab.results || tab.results.length === 0)) {
-        store.setTabResult(tabId, res.data ?? res.results ?? [])
+        store.setTabResult(tabId, res?.data ?? res?.results ?? [])
       } else {
         store.markSearchDone(tabId)
       }
@@ -205,15 +209,18 @@ function App() {
     // Search progress listener
     const cleanupSearch = ea?.onSearchProgress?.((progress: any) => {
       const store = useSearchTabsStore.getState()
-      const activeTabId = store.activeTabId
-      if (!activeTabId) return
-      if (progress.type === 'engine_start') store.setCurrentEngine(activeTabId, progress.engine)
-      else if (progress.type === 'engine_results' && progress.results?.length > 0) store.appendResults(activeTabId, progress.results)
+      // Route to the tab that started the search; only fall back to the active
+      // tab if the backend did not report one.
+      const tabId = progress.tabId ?? store.activeTabId
+      if (!tabId) return
+      if (progress.type === 'engine_start') store.setCurrentEngine(tabId, progress.engine)
+      else if (progress.type === 'engine_results' && progress.results?.length > 0) store.appendResults(tabId, progress.results)
     })
 
-    const cleanupSearchError = ea?.onSearchError?.((error: string) => {
+    const cleanupSearchError = ea?.onSearchError?.((payload: any) => {
       const store = useSearchTabsStore.getState()
-      if (store.activeTabId) store.setTabError(store.activeTabId, error)
+      const tabId = payload?.tabId ?? store.activeTabId
+      if (tabId) store.setTabError(tabId, payload?.error ?? String(payload))
     })
 
     // Auto-update listeners

@@ -4,7 +4,8 @@ const api = {
   getSettings: (): Promise<any> => ipcRenderer.invoke('get-settings'),
   setSettings: (settings: any): Promise<any> => ipcRenderer.invoke('set-settings', settings),
 
-  searchMetaSearch: (query: string): Promise<any> => ipcRenderer.invoke('search-metasearch', query),
+  searchMetaSearch: (query: string, tabId?: string | null): Promise<any> =>
+    ipcRenderer.invoke('search-metasearch', query, tabId ?? null),
 
   getDownloads: (): Promise<any[]> => ipcRenderer.invoke('get-downloads'),
   getDownloadedEpisodes: (title: string, season: number): Promise<{ episodes: number[]; queued: number[] }> =>
@@ -57,8 +58,8 @@ const api = {
     ipcRenderer.on('search-progress', (_e, progress) => callback(progress))
     return () => ipcRenderer.removeAllListeners('search-progress')
   },
-  onSearchError: (callback: (error: string) => void) => {
-    ipcRenderer.on('search-error', (_e, error) => callback(error))
+  onSearchError: (callback: (payload: { tabId: string | null; error: string }) => void) => {
+    ipcRenderer.on('search-error', (_e, payload) => callback(payload))
     return () => ipcRenderer.removeAllListeners('search-error')
   },
   checkPlugins: (): Promise<any> => ipcRenderer.invoke('check-plugins'),
@@ -84,6 +85,11 @@ const api = {
   catalogManifest: (): Promise<any> => ipcRenderer.invoke('catalog-manifest'),
   catalogItems: (type: string, id: string): Promise<any> => ipcRenderer.invoke('catalog-items', type, id),
   catalogMeta: (type: string, imdbId: string): Promise<any> => ipcRenderer.invoke('catalog-meta', type, imdbId),
+
+  // ── Comet stream addon (the embedded addon base) ──
+  cometManifest: (): Promise<any> => ipcRenderer.invoke('comet-manifest'),
+  cometStreams: (type: 'movie' | 'series', imdbId: string, season?: number | null, episode?: number | null): Promise<any> =>
+    ipcRenderer.invoke('comet-streams', type, imdbId, season ?? null, episode ?? null),
 
   // ── Auto-update ──
   checkForUpdates: (): Promise<any> => ipcRenderer.invoke('check-for-updates'),

@@ -217,6 +217,23 @@ export class MetaSearch {
       let resolved = false
       let finalResults: MetaResult[] = []
 
+      // Parse one JSON line of runner output. The runner's final `done` line
+      // carries the authoritative, deduplicated result set; the per-engine
+      // chunks are streamed to the UI as they arrive so results appear live.
+      const handleLine = (trimmed: string) => {
+        try {
+          const progress: SearchProgress = JSON.parse(trimmed)
+
+          if (progress.type === 'engine_start' || progress.type === 'engine_results') {
+            callbacks.onProgress(progress)
+          } else if (progress.type === 'done' && Array.isArray(progress.results)) {
+            finalResults = progress.results
+          }
+        } catch {
+          // Non-JSON line (debug output), skip
+        }
+      }
+
       const { cmd, args } = getRunnerCommand()
       const proc: ChildProcess = spawn(cmd, [...args, '--stream', query], {
         windowsHide: true,
@@ -249,20 +266,7 @@ export class MetaSearch {
 
         for (const line of lines) {
           const trimmed = line.trim()
-          if (!trimmed) continue
-
-          try {
-            const progress: SearchProgress = JSON.parse(trimmed)
-
-            if (progress.type === 'engine_start' || progress.type === 'engine_results') {
-              callbacks.onProgress(progress)
-            } else if (progress.type === 'done') {
-              // finalResults will be set via onProgress (engine_results accumulate)
-              // The done event signals completion
-            }
-          } catch {
-            // Non-JSON line (debug output), skip
-          }
+          if (trimmed) handleLine(trimmed)
         }
       })
 
@@ -276,21 +280,15 @@ export class MetaSearch {
         resolved = true
 
         // Process any remaining buffer
-        if (buffer.trim()) {
-          try {
-            const progress: SearchProgress = JSON.parse(buffer.trim())
-            if (progress.type === 'engine_results' || progress.type === 'engine_start') {
-              callbacks.onProgress(progress)
-            }
-          } catch { /* ignore */ }
-        }
+        if (buffer.trim()) handleLine(buffer.trim())
 
         if (stderr && code !== 0) {
           console.warn(`[MetaSearch] Stream stderr for "${query}":`, stderr.slice(0, 500))
         }
 
-        // Pass empty results if nothing was collected
-        callbacks.onDone([])
+        // Hand back the runner's deduplicated set (empty only if truly nothing
+        // was found). Previously this always passed [] and the results were lost.
+        callbacks.onDone(finalResults)
         resolve()
       })
 

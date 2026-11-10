@@ -35,10 +35,10 @@ class wolfmax4k:
         return ''
 
     def _api_search(self, query, cidr='0', page='1'):
-        """Call JSON search API via POST."""
+        """Call JSON search API via POST. Always returns {index: item}."""
         token = self._get_token()
         if not token:
-            return []
+            return {}
 
         post_body = urllib.parse.urlencode({
             '_ACTION': 'buscar',
@@ -62,11 +62,23 @@ class wolfmax4k:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
 
-            if not data.get('response'):
-                return []
-            return data.get('data', {}).get('datafinds', {}).get('0', {})
+            if not isinstance(data, dict) or not data.get('response'):
+                return {}
+
+            payload = data.get('data')
+            datafinds = payload.get('datafinds') if isinstance(payload, dict) else None
+
+            # The API returns `datafinds` either as an object keyed by index or
+            # as a plain array. Normalise both to {index: item}; the old code
+            # assumed an object and crashed with "'list' object has no attribute
+            # 'items'" on multi-word queries.
+            if isinstance(datafinds, list):
+                return {str(i): item for i, item in enumerate(datafinds) if isinstance(item, dict)}
+            if isinstance(datafinds, dict):
+                return {str(k): v for k, v in datafinds.items() if isinstance(v, dict)}
+            return {}
         except Exception:
-            return []
+            return {}
 
     def search(self, what, cat='all'):
         # qbit-runner replaces spaces with %20 — undo that

@@ -51,14 +51,18 @@ export const useSearchTabsStore = create<SearchTabsState>((set, get) => ({
   },
 
   setTabResult: (id, results) =>
-    set((s) => ({
-      tabs: { ...s.tabs, [id]: { ...s.tabs[id], results, loading: false } },
-    })),
+    set((s) => {
+      const tab = s.tabs[id]
+      if (!tab) return s
+      return { tabs: { ...s.tabs, [id]: { ...tab, results, loading: false } } }
+    }),
 
   setTabError: (id, error) =>
-    set((s) => ({
-      tabs: { ...s.tabs, [id]: { ...s.tabs[id], error, loading: false } },
-    })),
+    set((s) => {
+      const tab = s.tabs[id]
+      if (!tab) return s
+      return { tabs: { ...s.tabs, [id]: { ...tab, error, loading: false } } }
+    }),
 
   appendResults: (id, newResults) =>
     set((s) => {

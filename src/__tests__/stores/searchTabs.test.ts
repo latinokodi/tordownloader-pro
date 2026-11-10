@@ -155,4 +155,33 @@ describe('searchTabsStore', () => {
       expect(tab.currentEngine).toBeNull()
     })
   })
+
+  // A search keeps streaming after the user closes its tab. Late results and
+  // errors must be dropped rather than materialising a phantom tab (which used
+  // to show up in the tab bar with no query).
+  describe('stale updates for a closed tab', () => {
+    it('does not create a tab via setTabResult', () => {
+      useSearchTabsStore.getState().setTabResult('gone', [makeResult()])
+      expect(useSearchTabsStore.getState().tabs['gone']).toBeUndefined()
+    })
+
+    it('does not create a tab via setTabError', () => {
+      useSearchTabsStore.getState().setTabError('gone', 'boom')
+      expect(useSearchTabsStore.getState().tabs['gone']).toBeUndefined()
+    })
+
+    it('does not create a tab via appendResults or setCurrentEngine', () => {
+      useSearchTabsStore.getState().appendResults('gone', [makeResult()])
+      useSearchTabsStore.getState().setCurrentEngine('gone', 'torlock')
+      expect(useSearchTabsStore.getState().tabs['gone']).toBeUndefined()
+    })
+
+    it('still updates a tab that does exist', () => {
+      const id = useSearchTabsStore.getState().addTab('test')
+      useSearchTabsStore.getState().setTabResult(id, [makeResult({ seeders: 7 })])
+      const tab = useSearchTabsStore.getState().tabs[id]
+      expect(tab.results).toHaveLength(1)
+      expect(tab.loading).toBe(false)
+    })
+  })
 })

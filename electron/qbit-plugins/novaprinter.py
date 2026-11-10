@@ -1,25 +1,108 @@
 """
 Shim for qBittorrent's novaprinter module.
-Replaces prettyPrinter() to capture results into a global list
+Replaces prettyPrinter() to capture results into a per-search accumulator
 instead of printing to stdout in qBittorrent's wire format.
 """
 
-_results: list = []
+import threading
+
+# ── Result accumulator ─────────────────────────────────
+# Engines are searched concurrently, one per worker thread, and every engine
+# reports through the module-level prettyPrinter(). A single shared list let
+# one engine's clear_results() wipe another engine's in-flight results, so each
+# search now gets its own accumulator keyed by thread.
+#
+# Engines that fan their own page fetches out into child threads (e.g.
+# torrentdownloads) must still land in the parent engine's result set, so
+# Thread.start is wrapped once to make children inherit the parent accumulator.
+
+_by_thread: dict = {}
+_unbound = threading.local()  # isolates stray threads instead of mixing them
+
+
+def _current() -> list:
+    """Return the accumulator bound to the calling thread."""
+    acc = _by_thread.get(threading.get_ident())
+    if acc is None:
+        acc = getattr(_unbound, 'results', None)
+        if acc is None:
+            acc = []
+            _unbound.results = acc
+    return acc
 
 
 def prettyPrinter(data: dict) -> None:
-    """Capture a search result dict into the global results list."""
-    _results.append(dict(data))
+    """Capture a search result dict into the current engine's results."""
+    _current().append(dict(data))
 
 
 def clear_results() -> None:
-    """Reset the results accumulator."""
-    _results.clear()
+    """Reset the current engine's accumulator."""
+    del _current()[:]
 
 
 def get_results() -> list:
-    """Return all captured results."""
-    return list(_results)
+    """Return all results captured for the current engine."""
+    return list(_current())
+
+
+class collect_results:
+    """Bind a fresh accumulator to the calling thread for one engine search.
+
+    Used as a context manager, and any thread started inside the block
+    inherits the same accumulator::
+
+        with collect_results() as acc:
+            plugin.search(query)
+    """
+
+    def __init__(self) -> None:
+        self._tid = threading.get_ident()
+        self._previous = _by_thread.get(self._tid)
+        self.results: list = []
+
+    def __enter__(self) -> list:
+        _by_thread[self._tid] = self.results
+        return self.results
+
+    def __exit__(self, *_exc) -> bool:
+        if self._previous is None:
+            _by_thread.pop(self._tid, None)
+        else:
+            _by_thread[self._tid] = self._previous
+        return False
+
+
+def _install_thread_inheritance() -> None:
+    """Make threads started by an engine report into that engine's results."""
+    original_start = threading.Thread.start
+    if getattr(original_start, '_qbit_inherits_results', False):
+        return  # already installed
+
+    def start_inheriting(self, *args, **kwargs):
+        parent_acc = _current()
+        inner_run = self.run
+
+        def run_inheriting():
+            tid = threading.get_ident()
+            previous = _by_thread.get(tid)
+            _by_thread[tid] = parent_acc
+            try:
+                inner_run()
+            finally:
+                if previous is None:
+                    _by_thread.pop(tid, None)
+                else:
+                    _by_thread[tid] = previous
+
+        self.run = run_inheriting
+        return original_start(self, *args, **kwargs)
+
+    start_inheriting._qbit_inherits_results = True
+    threading.Thread.start = start_inheriting
+
+
+_install_thread_inheritance()
 
 
 def anySizeToBytes(size_string: str) -> int:

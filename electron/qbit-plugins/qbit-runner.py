@@ -114,8 +114,11 @@ def load_plugin(engine_file: str, source_dir: str = ENGINES_DIR) -> Optional[tup
         return None
 
     try:
-        # Dynamic import
-        import importlib
+        # Dynamic import.
+        # NOTE: must import the *submodule* explicitly — plain `import importlib`
+        # does NOT bind importlib.util, so `importlib.util.spec_from_file_location`
+        # raises AttributeError and every engine silently fails to load.
+        import importlib.util
         spec = importlib.util.spec_from_file_location(
             module_name,
             os.path.join(source_dir, engine_file)
@@ -124,7 +127,15 @@ def load_plugin(engine_file: str, source_dir: str = ENGINES_DIR) -> Optional[tup
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-    except Exception:
+    except Exception as exc:
+        # Never swallow silently: a swallowed load error used to make every
+        # search return "no results" with a clean exit code.
+        print(
+            f'[qbit-runner] failed to load engine {engine_file}: '
+            f'{type(exc).__name__}: {exc}',
+            file=sys.stderr,
+            flush=True,
+        )
         return None
 
     # Find the plugin class (the one with .search method and .url attribute)
@@ -148,17 +159,24 @@ def load_plugin(engine_file: str, source_dir: str = ENGINES_DIR) -> Optional[tup
 def run_plugin(name: str, plugin, query: str) -> list:
     """Run a single plugin's search and return list of normalized results."""
     try:
-        novaprinter.clear_results()
-        plugin.search(query.replace(' ', '%20'))
-        raw_results = novaprinter.get_results()
+        # Each engine collects into its own accumulator, so concurrently
+        # running engines can no longer clear or steal each other's results.
+        with novaprinter.collect_results() as acc:
+            plugin.search(query.replace(' ', '%20'))
 
         normalized = []
-        for raw in raw_results:
+        for raw in list(acc):
             norm = normalize_result(raw)
             if norm:
                 normalized.append(norm)
         return normalized
-    except Exception:
+    except Exception as exc:
+        # Surface the failure rather than reporting a silent empty result.
+        print(
+            f'[qbit-runner] engine {name} failed: {type(exc).__name__}: {exc}',
+            file=sys.stderr,
+            flush=True,
+        )
         return []
 
 
@@ -210,8 +228,16 @@ def main():
             plugins.append(result)
 
     if not plugins:
+        # Exit 3 (per this script's contract) so the caller logs stderr instead
+        # of reporting a silent, legitimate-looking "0 results".
+        print(
+            f'[qbit-runner] no engines loaded from {ENGINES_DIR} '
+            f'({len(engine_files)} candidate files) — search cannot return results',
+            file=sys.stderr,
+            flush=True,
+        )
         print(json.dumps([], indent=2))
-        sys.exit(0)
+        sys.exit(3)
 
     # Run searches in parallel with a timeout per plugin
     all_results = []
@@ -259,7 +285,9 @@ def main():
     final = deduplicate(all_results)
 
     if stream_mode:
-        done_line = json.dumps({'type': 'done', 'total': len(final)})
+        # Include the deduplicated set so the caller does not have to rebuild
+        # it from the per-engine chunks it already streamed.
+        done_line = json.dumps({'type': 'done', 'total': len(final), 'results': final})
         print(done_line, flush=True)
     else:
         print(json.dumps(final, indent=2))

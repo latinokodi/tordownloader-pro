@@ -28,7 +28,7 @@ export async function api<T = unknown>(
       const id = path.split('/')[3]
       return await ea.cancelDownload(id) as unknown as T
     }
-    if (path.startsWith('/search')) return await ea.searchMetaSearch((body as any)?.query) as unknown as T
+    if (path.startsWith('/search')) return await ea.searchMetaSearch((body as any)?.query, (body as any)?.tabId ?? null) as unknown as T
     if (path.startsWith('/select-folder')) return { path: await ea.selectFolder() } as unknown as T
 
     if (path === '/auth/start') return await ea.authStart() as unknown as T

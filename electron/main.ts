@@ -15,6 +15,14 @@ import { computeDestination, safeSegment } from './media-layout'
 import { getSeasonCache, saveSeasonCache } from './season-cache'
 
 // ── Single instance lock ──────────────────────────────
+// NOTE: app.setName() alone is NOT enough on Electron 42 - it changes app.getName()
+// but does NOT recompute getPath('userData') (verified: setName -> userData stayed
+// "%APPDATA%\Electron"). So we set the path EXPLICITLY. This app keeps the existing
+// "tordownloader-pro" dir (so current data is preserved), while tordownloaderSERV
+// uses "tordownloader-serv". Without this both resolve to the same userData dir
+// (identical package.json "name" + appId) and steal each other's instance lock.
+app.setName('tordownloader-pro')
+app.setPath('userData', path.join(app.getPath('appData'), 'tordownloader-pro'))
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -151,7 +159,7 @@ ipcMain.handle('set-settings', (_e, settings: Partial<Settings>) => {
   return { success: true }
 })
 
-ipcMain.handle('search-metasearch', async (e, query: string) => {
+ipcMain.handle('search-metasearch', async (e, query: string, tabId: string | null = null) => {
   try {
     const ms = getMetaSearch()
     const sender = e.sender
@@ -160,14 +168,16 @@ ipcMain.handle('search-metasearch', async (e, query: string) => {
     await ms.searchStream(query, {
       onProgress: (progress: SearchProgress) => {
         if (sender.isDestroyed()) return
-        sender.send('search-progress', { tabId: null, ...progress })
+        // Carry the originating tab id so results land in the tab that started
+        // the search, not whichever tab happens to be focused on arrival.
+        sender.send('search-progress', { tabId, ...progress })
       },
       onDone: (results) => {
         allResults = results
       },
       onError: (err) => {
         if (!sender.isDestroyed()) {
-          sender.send('search-error', err.message)
+          sender.send('search-error', { tabId, error: err.message })
         }
       },
     })
@@ -1054,7 +1064,7 @@ ipcMain.handle('search-batch', async (_e, query: string) => {
 
 // ── Stremio Catalog Addon ──────────────────────
 
-const CATALOG_BASE = 'https://btttr.cc/pVjfb-M2DP5XBD9sDwsBu-l1Sd6a9O464HotkvSKwzAMjM0kWmXJk-TkckX_90GOHdtRfrTYm0N9H8mQFEnoJYjRolALEwz-DARaMhbSoFN9mqATWJXgphBuv2oZBp0gVimXi-K4_DT1pwNYTTKpILsfDpSpLBeoi4Pqe6s8K6D4bCHLZ4N_cmO5BOBpMgOrMtBoKYFUrTiZFjJR8scGIEW9IgExl5Si5THkkq9IG3qLWrsCs1TrtuIZyblG-SwcYVYEictknsfPbVyMmUUuJWYoUoAoDCNYaCrjWjgMag4oBFietv0xWWR5ySmhG5VDmrs8EMGM5kpTIUt4myq4WV6GPdh51Tr9G8kFAraetHTjBpa4IpC0Ig1LQp2Amh_WbXVOEGueEiQqzlOSFvUGDGmnbs5F2uJZskvUXEmA5EgGjJI8XqPWXGkAY1HDGrWBGKWSRYAEl3QiEWgoASUBt84Zq_RmLx8yVnLOdQpglrmFPAOUCazRxssWUlOickSUBKCVEEWRWiUJjEtJncWqPk7kkYToqlwmVcR3xe3V1ZwnrlBnAHhx2TpZcIHJAsDkM01Jwl0NCIotV7Ktwi5dXTwDYIwJpRvANerEbKs047HNNcGaS0naHKz_UlL6eLD8XckYi1kGsFRaKx10gjSZCe5M5LPBRdS_3BdddK_2RN2wd-GJ-l0fdYDY80V9X1foi_b96ob9D77IsxiFv3uiKNoXda889VHkO9HzdYUHLHr_MQr3Xb24inrBX50gJYvB4OXNTXLwEkhMKRgEf9zdDAdsqjI2dgB2t-uiwSCYBa_vaqe12rvr8bePX9iowrDHxoX3NZ_rvcf9nX5jk6o-fb2n-nStc0jGsrtmA_c1vbeT19odlH0uoWV8mZqzayHYtGwWvr13dv89c6WV7ypnd7mxbELEhgWjkN3wI1b9wdFIaWOW-Mz3D5VacxGcls-4Ybe4IvbVUdito7D7-Rmf3zCQaptTnRMbOTC7qcFsUoDZL-xTOb98e0cGWa36ZnSm2t8452qNE4uaPaE2bOQgrDkKzxX9wZnYqH13zpRkyKbjx49sMr0ffz92BU4Nz4a3y9yyx6zDrmXCnqrJ6uv7fyO2tjfectnEcX81LArD-r5V_eEtN-70nN6v14ft6an20x7ntYLr7XD3CSenfCPC1TGbtJaAA8X6nm2g4eAWza4LNANWtMiHLZ491dvD8VZ-ZI1o3kB8toNdGE83cn_jqBXdVivIjuftIjX4S7ssSpbxWG5dafiqskbntktia6KqE6b75GKxqclfyc4F_3HaYLH5-JzWOD5kqOnl7fD-nJFer5nlFH8qyR6KLniO2G8aykV-9u-EzZbIjaTNb2c5l8e8OxeH_ocD1s6Srvb_0xmG2wJrxkillGyOg6OoWUFLzYUgfRTudsfGDY85fOIndIfHLsChIml6PRyOzqTBLaPNVuDay4mQNCtq5JJ1AtvKksa0eBA4hC0W20P3rya8ulcCY6loBe6NYBBgbpV7PNBqocmYYOBGXvnKMEX3qLEV_Juj4HazFc1RGOoErj19JqmpAjnBGC2Xi0qCC6oEFUlp543SfMEliuD19T8'
+const CATALOG_BASE = 'https://comet.stremio.ru/s/WuPvYs_OtKH92vkg7iRetCW99cKdmIa0fBppZ0DftQk/eyJtYXhSZXN1bHRzUGVyUmVzb2x1dGlvbiI6MCwibWF4U2l6ZSI6MjE0NzQ4MzY0ODAsImNhY2hlZE9ubHkiOmZhbHNlLCJzb3J0Q2FjaGVkVW5jYWNoZWRUb2dldGhlciI6ZmFsc2UsInJlbW92ZVRyYXNoIjp0cnVlLCJyZXN1bHRGb3JtYXQiOlsiYWxsIl0sImRlYnJpZFNlcnZpY2VzIjpbXSwiZW5hYmxlVG9ycmVudCI6dHJ1ZSwiZGVkdXBsaWNhdGVTdHJlYW1zIjpmYWxzZSwic2NyYXBlRGVicmlkQWNjb3VudFRvcnJlbnRzIjpmYWxzZSwiZGVicmlkU3RyZWFtUHJveHlQYXNzd29yZCI6IiIsImxhbmd1YWdlcyI6eyJyZXF1aXJlZCI6WyJsYSJdLCJhbGxvd2VkIjpbXSwiZXhjbHVkZSI6W10sInByZWZlcnJlZCI6WyJsYSJdfSwicmVzb2x1dGlvbnMiOnsicjU3NnAiOmZhbHNlLCJyNDgwcCI6ZmFsc2UsInIzNjBwIjpmYWxzZSwicjI0MHAiOmZhbHNlfSwib3B0aW9ucyI6eyJyZW1vdmVfcmFua3NfdW5kZXIiOi0xMDAwMDAwMDAwMCwiYWxsb3dfZW5nbGlzaF9pbl9sYW5ndWFnZXMiOnRydWUsInJlbW92ZV91bmtub3duX2xhbmd1YWdlcyI6ZmFsc2V9fQ=='
 
 function catalogFetch(path: string): Promise<any> {
   return new Promise((resolve) => {
@@ -1071,13 +1081,66 @@ function catalogFetch(path: string): Promise<any> {
   })
 }
 
+// ── Comet stream addon ────────────────────────────────
+// The embedded addon is Comet (id: stremio.comet.fast). Its manifest declares
+// `catalogs: []` and only the `stream` resource, so CATALOG_BASE is used here to
+// resolve torrent streams for a known IMDb id — NOT to list catalogs. The
+// catalog/meta handlers below are kept for catalog-capable addons and degrade
+// gracefully (empty list / explicit failure) when the addon does not implement
+// those resources.
+export interface CometStream {
+  name?: string
+  title?: string
+  infoHash?: string
+  fileIdx?: number
+  url?: string
+  behaviorHints?: {
+    filename?: string
+    videoSize?: number
+    bingeGroup?: string
+    [key: string]: unknown
+  }
+}
+
+ipcMain.handle('comet-manifest', async () => {
+  const manifest = await catalogFetch('/manifest.json')
+  if (manifest) return { success: true, data: manifest }
+  return { success: false, error: 'Failed to fetch Comet manifest' }
+})
+
+// Stream ids for series carry the episode: "tt1234567:2:5". Movies use the bare
+// IMDb id. Validated before interpolation so a caller cannot inject a path.
+ipcMain.handle('comet-streams', async (_e, type: string, imdbId: string, season?: number | null, episode?: number | null) => {
+  if (type !== 'movie' && type !== 'series') {
+    return { success: false, error: 'Invalid type (expected movie|series)', data: [] }
+  }
+  if (typeof imdbId !== 'string' || !/^tt\d{5,10}$/.test(imdbId)) {
+    return { success: false, error: 'Invalid IMDb id', data: [] }
+  }
+  let id = imdbId
+  if (type === 'series') {
+    const s = Number(season)
+    const e = Number(episode)
+    if (!Number.isInteger(s) || !Number.isInteger(e) || s < 1 || e < 1) {
+      return { success: false, error: 'Series streams require season and episode', data: [] }
+    }
+    id = `${imdbId}:${s}:${e}`
+  }
+  const data = await catalogFetch(`/stream/${type}/${id}.json`)
+  if (data && Array.isArray(data.streams)) {
+    return { success: true, data: data.streams as CometStream[] }
+  }
+  return { success: false, error: 'Failed to fetch Comet streams', data: [] }
+})
+
 let _catalogManifest: any = null
 
 ipcMain.handle('catalog-manifest', async () => {
   if (_catalogManifest) return { success: true, data: _catalogManifest }
   const manifest = await catalogFetch('/manifest.json')
   if (manifest) {
-    _catalogManifest = manifest.catalogs || []
+    // Comet exposes no catalogs; an empty array is the correct answer, not an error.
+    _catalogManifest = Array.isArray(manifest.catalogs) ? manifest.catalogs : []
     return { success: true, data: _catalogManifest }
   }
   return { success: false, error: 'Failed to fetch catalog manifest' }

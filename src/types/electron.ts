@@ -40,6 +40,14 @@ export interface SearchProgress {
   type: 'engine_start' | 'engine_results' | 'done'
   engine?: string
   results?: import('../store/searchTabs').SearchResult[]
+  total?: number
+  /** Tab that initiated the search, so results route to the right tab. */
+  tabId?: string | null
+}
+
+export interface SearchErrorPayload {
+  tabId: string | null
+  error: string
 }
 
 // ── Log ──
@@ -111,7 +119,7 @@ export interface ElectronAPI {
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Partial<AppSettings>) => Promise<ApiResult>
 
-  searchMetaSearch: (query: string) => Promise<any>
+  searchMetaSearch: (query: string, tabId?: string | null) => Promise<any>
   getDownloads: () => Promise<Download[]>
   getDownloadedEpisodes: (title: string, season: number) => Promise<{ episodes: number[]; queued: number[] }>
   getSeasonCache: (imdbId: string, season: number) => Promise<{ found: boolean; episodes: Record<string, unknown[]> }>
@@ -147,7 +155,7 @@ export interface ElectronAPI {
   flaresolverrStatus: () => Promise<FlareSolverrStatus>
 
   onSearchProgress: (callback: (progress: SearchProgress) => void) => () => void
-  onSearchError: (callback: (error: string) => void) => () => void
+  onSearchError: (callback: (payload: SearchErrorPayload) => void) => () => void
 
   checkPlugins: () => Promise<any>
   updatePlugins: () => Promise<any>
