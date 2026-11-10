@@ -1,6 +1,6 @@
 {
   "name": "tordownloader-pro",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "TorDownloader PRO — Premium TorBox & Jackett Client",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -34,7 +34,6 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.6",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.3",
